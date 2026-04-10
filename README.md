@@ -1,5 +1,12 @@
 # 安全网络聊天工具（TLS-Message-GUI）
 
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyQt5](https://img.shields.io/badge/PyQt5-5.15.10-41CD52?logo=qt&logoColor=white)](https://pypi.org/project/PyQt5/)
+[![SQLite](https://img.shields.io/badge/SQLite-Built--in-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![TLS](https://img.shields.io/badge/Security-TLS-0A66C2?logo=letsencrypt&logoColor=white)](#)
+[![Tests](https://img.shields.io/badge/Tests-unittest-8A2BE2)](#测试与校验)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](#快速开始)
+
 基于 Python + PyQt5 + SQLite 的桌面聊天系统，包含客户端、服务端管理界面与 TLS 安全通信。项目适合课程实验、功能演示和小规模本地联调。
 
 ## 项目概览
