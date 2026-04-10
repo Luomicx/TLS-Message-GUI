@@ -1,1 +1,8 @@
 .ace-tool/
+__pycache__/
+.sisyphus\drafts
+.vscode/
+plans/
+docs/
+doc/
+.sisyphus/drafts/ui-ux-optimization.md
