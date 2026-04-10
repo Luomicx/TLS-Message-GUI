@@ -1,8 +1,18 @@
 .ace-tool/
+
+# Python cache and bytecode
 __pycache__/
-.sisyphus\drafts
+**/__pycache__/
+*.py[cod]
+
+# IDE/editor
 .vscode/
-plans/
+
+# Local docs and plans
 docs/
 doc/
+plans/
+
+# Local draft artifacts
+.sisyphus/drafts/
 .sisyphus/drafts/ui-ux-optimization.md
