@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import ssl
 import threading
+import base64
 from typing import Any
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -19,6 +20,7 @@ class ClientController(QObject):
     message_sent = pyqtSignal(dict)
     messages_loaded = pyqtSignal(dict)
     logout_finished = pyqtSignal(dict)
+    forced_logout = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8000, parent=None):
@@ -61,12 +63,16 @@ class ClientController(QObject):
         self.logout_finished.emit(response)
         return response
 
-    def register(self, username: str, password: str) -> dict[str, Any]:
+    def register(
+        self, username: str, password: str, question: str, answer: str
+    ) -> dict[str, Any]:
         response = self._request(
             {
                 "action": "register",
                 "username": username,
                 "password": password,
+                "question": question,
+                "answer": answer,
             }
         )
         self.register_finished.emit(response)
@@ -133,6 +139,140 @@ class ClientController(QObject):
         self.messages_loaded.emit(response)
         return response
 
+    def heartbeat(self, username: str) -> dict[str, Any]:
+        return self._request({"action": "heartbeat", "username": username})
+
+    def get_profile(self, username: str) -> dict[str, Any]:
+        return self._request({"action": "get_profile", "username": username})
+
+    def update_profile(self, username: str, nickname: str) -> dict[str, Any]:
+        return self._request(
+            {"action": "update_profile", "username": username, "nickname": nickname}
+        )
+
+    def change_password(
+        self, username: str, old_password: str, new_password: str
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "action": "change_password",
+                "username": username,
+                "old_password": old_password,
+                "new_password": new_password,
+            }
+        )
+
+    def set_recovery(self, username: str, question: str, answer: str) -> dict[str, Any]:
+        return self._request(
+            {
+                "action": "set_recovery",
+                "username": username,
+                "question": question,
+                "answer": answer,
+            }
+        )
+
+    def get_recovery_questions(self, username: str) -> dict[str, Any]:
+        response = self._request(
+            {
+                "action": "get_recovery_questions",
+                "username": username,
+            }
+        )
+        if (
+            not response.get("ok", False)
+            and str(response.get("message", "")).strip().lower() == "unsupported action"
+        ):
+            return {
+                "ok": False,
+                "code": "server_update_required",
+                "message": "服务端未加载找回问题接口，请重启服务端后重试",
+                "data": {},
+            }
+        return response
+
+    def recover_password(
+        self, username: str, question: str, answer: str, new_password: str
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "action": "recover_password",
+                "username": username,
+                "question": question,
+                "answer": answer,
+                "new_password": new_password,
+            }
+        )
+
+    def create_group(
+        self, username: str, group_name: str, members: list[str] | None = None
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "action": "create_group",
+                "username": username,
+                "group_name": group_name,
+                "members": list(members or []),
+            }
+        )
+
+    def list_groups(self, username: str) -> dict[str, Any]:
+        return self._request({"action": "list_groups", "username": username})
+
+    def send_group_message(
+        self,
+        sender: str,
+        group_id: int,
+        content: str,
+        encoding_rule: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "action": "send_group_message",
+                "sender": sender,
+                "group_id": int(group_id),
+                "content": content,
+                "encoding_rule": list(encoding_rule or []),
+            }
+        )
+
+    def pull_group_messages(
+        self, username: str, group_id: int, *, since_id: int = 0
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "action": "pull_group_messages",
+                "username": username,
+                "group_id": int(group_id),
+                "since_id": int(since_id),
+            }
+        )
+
+    def send_file(
+        self, sender: str, receiver: str, file_name: str, file_bytes: bytes
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "action": "send_file",
+                "sender": sender,
+                "receiver": receiver,
+                "file_name": file_name,
+                "file_base64": base64.b64encode(file_bytes).decode("ascii"),
+            }
+        )
+
+    def pull_files(
+        self, username: str, *, since_id: int = 0, peer: str | None = None
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "action": "pull_files",
+            "username": username,
+            "since_id": int(since_id),
+        }
+        if peer:
+            payload["peer"] = peer
+        return self._request(payload)
+
     def _ensure_connection(self) -> socket.socket | ssl.SSLSocket:
         if self._sock is None:
             raw_sock = socket.create_connection((self.host, self.port), timeout=5)
@@ -154,13 +294,7 @@ class ClientController(QObject):
             }
         self._request_in_flight = True
         try:
-            sock = self._ensure_connection()
-            sock.sendall(encode_request(payload))
-            response = self._recv_line(sock)
-            data = decode_response(response)
-            if not data.get("ok", False):
-                self.error_occurred.emit(str(data.get("message", "请求失败")))
-            return data
+            return self._perform_request(payload, allow_retry=True)
         except Exception as exc:  # noqa: BLE001
             self.close()
             message = f"服务器连接失败: {exc}"
@@ -174,6 +308,31 @@ class ClientController(QObject):
         finally:
             self._request_in_flight = False
             self._request_lock.release()
+
+    def _perform_request(
+        self, payload: dict[str, Any], *, allow_retry: bool
+    ) -> dict[str, Any]:
+        try:
+            sock = self._ensure_connection()
+            sock.sendall(encode_request(payload))
+            response = self._recv_line(sock)
+            data = decode_response(response)
+        except (ConnectionError, OSError, ssl.SSLError):
+            self.close()
+            if allow_retry and self._should_retry_after_disconnect(payload):
+                return self._perform_request(payload, allow_retry=False)
+            raise
+        if str(data.get("code", "")) == "force_logout":
+            self.close()
+            self.forced_logout.emit(data)
+            return data
+        if not data.get("ok", False):
+            self.error_occurred.emit(str(data.get("message", "请求失败")))
+        return data
+
+    def _should_retry_after_disconnect(self, payload: dict[str, Any]) -> bool:
+        action = str(payload.get("action", "")).strip().lower()
+        return action not in {"login", "register", "recover_password"}
 
     def _recv_line(self, sock: socket.socket) -> bytes:
         chunks: list[bytes] = []

@@ -35,7 +35,7 @@ class ClientAppEdificeMVPIntegrationTest(unittest.TestCase):
 
     @override
     def setUp(self) -> None:
-        self.temp_dir = Path(tempfile.mkdtemp())
+        self.temp_dir = Path(tempfile.mkdtemp(dir=str(Path.cwd())))
         db_path = self.temp_dir / "server.db"
         self.db = Database(db_path, journal_mode="DELETE")
         self.db.init_schema()
@@ -293,3 +293,4 @@ class ClientAppEdificeMVPIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())
+

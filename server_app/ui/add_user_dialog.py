@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -20,55 +21,139 @@ from PyQt5.QtWidgets import (
 )
 
 from ..db import ALLOWED_ENCODINGS
+from .theme import build_admin_stylesheet, repolish, resolve_ui_metrics
 
 
 class AddUserDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("添加用户")
-        self.resize(420, 240)
+        self.ui_metrics = resolve_ui_metrics()
+        self.setWindowTitle("新增用户")
+        self.resize(self.ui_metrics.add_user_dialog_size)
+        self.setMinimumWidth(self.ui_metrics.add_user_dialog_min_width)
+        self.setStyleSheet(build_admin_stylesheet(self.ui_metrics.scale))
 
         self._avatar_bytes: bytes | None = None
 
         self.edit_username = QLineEdit()
+        self.edit_username.setPlaceholderText("请输入登录用户名")
+
         self.edit_password = QLineEdit()
+        self.edit_password.setPlaceholderText("请输入初始密码")
         self.edit_password.setEchoMode(QLineEdit.Password)
 
-        self.chk_locked = QCheckBox("锁定")
+        self.chk_locked = QCheckBox("创建后立即锁定账号")
 
-        self.lbl_avatar = QLabel("(no avatar)")
-        self.lbl_avatar.setFixedSize(72, 72)
+        self.lbl_avatar = QLabel("未选择头像")
+        self.lbl_avatar.setFixedSize(
+            self.ui_metrics.preview_avatar_size,
+            self.ui_metrics.preview_avatar_size,
+        )
         self.lbl_avatar.setAlignment(Qt.AlignCenter)
-        self.lbl_avatar.setStyleSheet("border: 1px solid #ccc;")
+        self.lbl_avatar.setWordWrap(True)
+        self.lbl_avatar.setStyleSheet(
+            f"background: #f8fbff; border: 1px dashed #c7d5e8; border-radius: {max(18, int(self.ui_metrics.preview_avatar_size * 0.16))}px;"
+        )
 
-        btn_choose = QPushButton("选择头像...")
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(
+            self.ui_metrics.card_padding,
+            self.ui_metrics.card_padding,
+            self.ui_metrics.card_padding,
+            self.ui_metrics.card_padding - 4,
+        )
+        root.setSpacing(self.ui_metrics.section_spacing)
+
+        title = QLabel("新增后台用户")
+        title.setObjectName("sectionTitle")
+        subtitle = QLabel("填写基础资料后即可创建账号，编码规则支持多选。")
+        subtitle.setObjectName("sectionSubtitle")
+        subtitle.setWordWrap(True)
+
+        form_card = QFrame()
+        form_card.setObjectName("surfaceCard")
+        form_layout = QHBoxLayout(form_card)
+        form_layout.setContentsMargins(
+            self.ui_metrics.card_padding,
+            self.ui_metrics.card_padding - 4,
+            self.ui_metrics.card_padding,
+            self.ui_metrics.card_padding - 4,
+        )
+        form_layout.setSpacing(self.ui_metrics.section_spacing)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(self.ui_metrics.section_spacing)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(max(14, self.ui_metrics.section_spacing // 2))
+        form.setVerticalSpacing(max(14, self.ui_metrics.section_spacing // 2))
+        form.addRow("用户名", self.edit_username)
+        form.addRow("初始密码", self.edit_password)
+        form.addRow("", self.chk_locked)
+        left_col.addLayout(form)
+
+        hint = QLabel("建议为演示或教学账号设置清晰的用户名，便于后续在后台检索。")
+        hint.setObjectName("hintText")
+        hint.setWordWrap(True)
+        left_col.addWidget(hint)
+        left_col.addStretch(1)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(max(12, self.ui_metrics.section_spacing // 2))
+
+        avatar_title = QLabel("头像预览")
+        avatar_title.setObjectName("metricTitle")
+        right_col.addWidget(avatar_title)
+        right_col.addWidget(self.lbl_avatar, 0, Qt.AlignCenter)
+
+        btn_choose = QPushButton("上传头像")
         btn_choose.clicked.connect(self.choose_avatar)
+        btn_choose.setProperty("role", "success")
+        repolish(btn_choose)
+        right_col.addWidget(btn_choose)
+        right_col.addStretch(1)
 
-        avatar_row = QHBoxLayout()
-        avatar_row.addWidget(self.lbl_avatar)
-        avatar_row.addWidget(btn_choose, 1)
+        form_layout.addLayout(left_col, 1)
+        form_layout.addLayout(right_col)
 
         enc_box = QGroupBox("编码规则")
         enc_layout = QHBoxLayout(enc_box)
+        enc_layout.setContentsMargins(
+            max(14, self.ui_metrics.section_spacing // 2),
+            max(20, self.ui_metrics.section_spacing),
+            max(14, self.ui_metrics.section_spacing // 2),
+            max(14, self.ui_metrics.section_spacing // 2),
+        )
+        enc_layout.setSpacing(max(16, self.ui_metrics.section_spacing // 2))
         self.enc_checks: dict[str, QCheckBox] = {}
         for token in ["base64", "hex", "caesar"]:
-            cb = QCheckBox(token)
-            self.enc_checks[token] = cb
-            enc_layout.addWidget(cb)
+            checkbox = QCheckBox(token)
+            self.enc_checks[token] = checkbox
+            enc_layout.addWidget(checkbox)
+        enc_layout.addStretch(1)
 
-        form = QFormLayout()
-        form.addRow("用户名:", self.edit_username)
-        form.addRow("密码:", self.edit_password)
-        form.addRow("头像:", avatar_row)
-        form.addRow("", self.chk_locked)
+        note = QLabel("未勾选时表示该账号默认不启用内容编码。")
+        note.setObjectName("hintText")
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
+        ok_button = buttons.button(QDialogButtonBox.Ok)
+        cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        ok_button.setText("创建用户")
+        cancel_button.setText("取消")
+        ok_button.setProperty("role", "primary")
+        repolish(ok_button)
 
-        root = QVBoxLayout(self)
-        root.addLayout(form)
+        root.addWidget(title)
+        root.addWidget(subtitle)
+        root.addWidget(form_card)
         root.addWidget(enc_box)
+        root.addWidget(note)
         root.addWidget(buttons)
 
     def choose_avatar(self) -> None:
@@ -80,11 +165,11 @@ class AddUserDialog(QDialog):
         )
         if not path:
             return
-        p = Path(path)
+        selected = Path(path)
         try:
-            data = p.read_bytes()
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "错误", f"无法读取文件: {e}")
+            data = selected.read_bytes()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "错误", f"无法读取文件: {exc}")
             return
 
         pm = QPixmap()
@@ -93,8 +178,14 @@ class AddUserDialog(QDialog):
             return
 
         self._avatar_bytes = data
+        self.lbl_avatar.setText("")
         self.lbl_avatar.setPixmap(
-            pm.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm.scaled(
+                int(self.ui_metrics.preview_avatar_size * 0.82),
+                int(self.ui_metrics.preview_avatar_size * 0.82),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
         )
 
     def _on_accept(self) -> None:
@@ -108,8 +199,8 @@ class AddUserDialog(QDialog):
             QMessageBox.warning(self, "提示", "密码不能为空")
             return
 
-        rule = [k for k, cb in self.enc_checks.items() if cb.isChecked()]
-        bad = [t for t in rule if t not in ALLOWED_ENCODINGS]
+        rule = [name for name, checkbox in self.enc_checks.items() if checkbox.isChecked()]
+        bad = [token for token in rule if token not in ALLOWED_ENCODINGS]
         if bad:
             QMessageBox.warning(self, "提示", "编码规则选择无效")
             return
@@ -120,7 +211,9 @@ class AddUserDialog(QDialog):
         username = self.edit_username.text().strip()
         password = self.edit_password.text()
         locked = 1 if self.chk_locked.isChecked() else 0
-        encoding_rule = [k for k, cb in self.enc_checks.items() if cb.isChecked()]
+        encoding_rule = [
+            name for name, checkbox in self.enc_checks.items() if checkbox.isChecked()
+        ]
         return {
             "username": username,
             "password": password,

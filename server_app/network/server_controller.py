@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import socket
 import socketserver
 import ssl
@@ -54,7 +55,7 @@ class ServerController(QObject):
         self.host = host
         self._server: Optional[ThreadingTCPServer] = None
         self._thread: Optional[threading.Thread] = None
-        self._online_users: dict[str, str] = {}
+        self._online_users: dict[str, socketserver.StreamRequestHandler] = {}
         self._lock = threading.Lock()
 
     def is_running(self) -> bool:
@@ -81,6 +82,34 @@ class ServerController(QObject):
         with self._lock:
             return username in self._online_users
 
+    def online_usernames(self) -> list[str]:
+        with self._lock:
+            return sorted(self._online_users)
+
+    def online_user_count(self) -> int:
+        with self._lock:
+            return len(self._online_users)
+
+    def _kick_existing_session(
+        self, username: str, current: socketserver.StreamRequestHandler
+    ) -> None:
+        with self._lock:
+            existing = self._online_users.get(username)
+            if existing is None or existing is current:
+                return
+        try:
+            existing.wfile.write(
+                encode_response_line(
+                    ok=False,
+                    code="force_logout",
+                    message="该账号已在另一台终端登录，你已被强制下线",
+                    data={"reason": "single_session_conflict"},
+                )
+            )
+            existing.wfile.flush()
+        except Exception:
+            pass
+
     def _make_handler(self) -> Type[socketserver.StreamRequestHandler]:
         controller = self
 
@@ -91,7 +120,10 @@ class ServerController(QObject):
 
             def handle(self) -> None:
                 while True:
-                    raw = self.rfile.readline()
+                    try:
+                        raw = self.rfile.readline()
+                    except OSError:
+                        break
                     if not raw:
                         break
                     raw = raw.strip()
@@ -121,7 +153,7 @@ class ServerController(QObject):
 
             def finish(self) -> None:
                 if self.current_user:
-                    controller._set_online(self.current_user, False)
+                    controller._set_online(self.current_user, False, self)
                 super().finish()
 
             def _handle_legacy(self, raw: bytes) -> bytes:
@@ -137,7 +169,7 @@ class ServerController(QObject):
                     result = controller.db.verify_login_detail(username, password)
                     if result.ok:
                         self.current_user = username
-                        controller._set_online(username, True)
+                        controller._set_online(username, True, self)
                         controller.log_signal.emit(f'"{username}"请求登录, 登录成功')
                         return b"OK\n"
                     controller.log_signal.emit(f'"{username}"请求登录, 登录失败')
@@ -149,11 +181,36 @@ class ServerController(QObject):
                     username = parts[1]
                     if self.current_user == username:
                         self.current_user = None
-                    controller._set_online(username, False)
+                    controller._set_online(username, False, self)
                     controller.log_signal.emit(f'"{username}"已注销')
                     return b"OK\n"
 
                 return b"ERR\n"
+
+            def _build_session_invalid_response(self, username: str) -> bytes:
+                if username and controller.is_user_online(username):
+                    return encode_response_line(
+                        ok=False,
+                        code="force_logout",
+                        message="该账号已在另一台终端登录，你已被强制下线",
+                        data={"reason": "single_session_conflict"},
+                    )
+                return encode_response_line(
+                    ok=False,
+                    code="not_authenticated",
+                    message="当前会话未登录或已失效，请重新登录",
+                )
+
+            def _require_authenticated_user(self, username: str) -> bytes | None:
+                if not username:
+                    return encode_response_line(
+                        ok=False,
+                        code="invalid_request",
+                        message="username is required",
+                    )
+                if self.current_user == username:
+                    return None
+                return self._build_session_invalid_response(username)
 
             def _handle_json(self, request: dict[str, Any]) -> bytes:
                 action = str(request.get("action", "")).strip().lower()
@@ -163,8 +220,9 @@ class ServerController(QObject):
                     password = str(request.get("password", ""))
                     result = controller.db.verify_login_detail(username, password)
                     if result.ok:
+                        controller._kick_existing_session(username, self)
                         self.current_user = username
-                        controller._set_online(username, True)
+                        controller._set_online(username, True, self)
                         controller.log_signal.emit(f'"{username}"请求登录, 登录成功')
                         return encode_response_line(
                             ok=True,
@@ -182,7 +240,12 @@ class ServerController(QObject):
                         )
                     controller.log_signal.emit(f'"{username}"请求登录, 登录失败')
                     return encode_response_line(
-                        ok=False, code=result.code, message=result.message
+                        ok=False,
+                        code=result.code,
+                        message=result.message,
+                        data={
+                            "remaining_attempts": result.remaining_attempts,
+                        },
                     )
 
                 if action == "logout":
@@ -195,18 +258,28 @@ class ServerController(QObject):
                         )
                     if self.current_user == username:
                         self.current_user = None
-                    controller._set_online(username, False)
+                    controller._set_online(username, False, self)
                     controller.log_signal.emit(f'"{username}"已注销')
                     return encode_response_line(ok=True, code="ok", message="注销成功")
 
                 if action == "register":
                     username = str(request.get("username", "")).strip()
                     password = str(request.get("password", ""))
+                    question = str(request.get("question", "")).strip()
+                    answer = str(request.get("answer", ""))
                     encoding_rule = request.get("encoding_rule") or ["base64"]
+                    if not question or not answer.strip():
+                        return encode_response_line(
+                            ok=False,
+                            code="recovery_required",
+                            message="注册时必须设置安全问题和答案",
+                        )
                     try:
                         user = controller.db.register_user(
                             username=username,
                             password=password,
+                            recovery_question=question,
+                            recovery_answer=answer,
                             encoding_rule=encoding_rule,
                         )
                     except sqlite3.IntegrityError:
@@ -231,6 +304,9 @@ class ServerController(QObject):
 
                 if action == "search_users":
                     username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
                     mode = str(request.get("mode", "fuzzy")).strip().lower()
                     query = str(request.get("query", "")).strip()
                     if mode == "id":
@@ -250,6 +326,9 @@ class ServerController(QObject):
 
                 if action == "add_friend":
                     username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
                     friend_id = request.get("friend_id")
                     try:
                         friend = controller.db.add_friend(username, int(friend_id))
@@ -280,6 +359,9 @@ class ServerController(QObject):
 
                 if action == "list_friends":
                     username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
                     return encode_response_line(
                         ok=True,
                         code="ok",
@@ -293,6 +375,9 @@ class ServerController(QObject):
 
                 if action == "send_message":
                     sender = str(request.get("from", "")).strip()
+                    auth_error = self._require_authenticated_user(sender)
+                    if auth_error is not None:
+                        return auth_error
                     receiver = str(request.get("to", "")).strip()
                     content = str(request.get("content", ""))
                     encoding_rule = request.get("encoding_rule") or []
@@ -322,8 +407,183 @@ class ServerController(QObject):
                         data={"message": message},
                     )
 
+                if action == "heartbeat":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    updated = controller.db.mark_heartbeat(username)
+                    if not updated:
+                        return encode_response_line(
+                            ok=False,
+                            code="user_not_found",
+                            message="用户不存在",
+                        )
+                    if self.current_user == username:
+                        controller._set_online(username, True, self)
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="heartbeat acknowledged",
+                    )
+
+                if action == "get_profile":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    profile = controller.db.get_profile(username)
+                    if profile is None:
+                        return encode_response_line(
+                            ok=False,
+                            code="user_not_found",
+                            message="用户不存在",
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="资料获取成功",
+                        data={"profile": controller._with_presence(profile)},
+                    )
+
+                if action == "update_profile":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    nickname = str(request.get("nickname", "")).strip()
+                    try:
+                        profile = controller.db.update_profile(
+                            username,
+                            nickname=nickname,
+                        )
+                    except ValueError as exc:
+                        code = str(exc)
+                        return encode_response_line(
+                            ok=False,
+                            code=code if code else "invalid_request",
+                            message="资料更新失败",
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="资料更新成功",
+                        data={"profile": controller._with_presence(profile)},
+                    )
+
+                if action == "change_password":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    old_password = str(request.get("old_password", ""))
+                    new_password = str(request.get("new_password", ""))
+                    try:
+                        controller.db.change_password(username, old_password, new_password)
+                    except ValueError as exc:
+                        code = str(exc) or "invalid_request"
+                        message_map = {
+                            "user_not_found": "用户不存在",
+                            "user_locked": "账号被锁定",
+                            "invalid_credentials": "原密码错误",
+                            "invalid_request": "请求参数无效",
+                        }
+                        return encode_response_line(
+                            ok=False,
+                            code=code,
+                            message=message_map.get(code, "修改密码失败"),
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="密码修改成功",
+                    )
+
+                if action == "set_recovery":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    question = str(request.get("question", ""))
+                    answer = str(request.get("answer", ""))
+                    try:
+                        controller.db.set_recovery_info(username, question, answer)
+                    except ValueError as exc:
+                        code = str(exc) or "invalid_request"
+                        return encode_response_line(
+                            ok=False,
+                            code=code,
+                            message="找回信息设置失败",
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="找回信息设置成功",
+                    )
+
+                if action in {
+                    "get_recovery_questions",
+                    "get_recovery_question",
+                    "load_recovery_questions",
+                }:
+                    username = str(request.get("username", "")).strip()
+                    try:
+                        questions = controller.db.get_recovery_questions(username)
+                    except ValueError as exc:
+                        code = str(exc) or "invalid_request"
+                        message_map = {
+                            "user_not_found": "用户不存在",
+                            "recovery_not_set": "未设置找回信息",
+                            "invalid_request": "请求参数无效",
+                        }
+                        return encode_response_line(
+                            ok=False,
+                            code=code,
+                            message=message_map.get(code, "找回问题获取失败"),
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="找回问题获取成功",
+                        data={"questions": questions},
+                    )
+
+                if action == "recover_password":
+                    username = str(request.get("username", "")).strip()
+                    question = str(request.get("question", ""))
+                    answer = str(request.get("answer", ""))
+                    new_password = str(request.get("new_password", ""))
+                    try:
+                        controller.db.recover_password(
+                            username,
+                            question=question,
+                            answer=answer,
+                            new_password=new_password,
+                        )
+                    except ValueError as exc:
+                        code = str(exc) or "invalid_request"
+                        message_map = {
+                            "user_not_found": "用户不存在",
+                            "recovery_not_set": "未设置找回信息",
+                            "recovery_mismatch": "找回校验失败",
+                            "invalid_request": "请求参数无效",
+                        }
+                        return encode_response_line(
+                            ok=False,
+                            code=code,
+                            message=message_map.get(code, "密码找回失败"),
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="密码重置成功",
+                    )
+
                 if action == "pull_messages":
                     username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
                     since_id = int(request.get("since_id", 0) or 0)
                     peer = request.get("peer")
                     messages = controller.db.pull_messages(
@@ -345,6 +605,157 @@ class ServerController(QObject):
                         data={"messages": decoded_messages},
                     )
 
+                if action == "create_group":
+                    owner = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(owner)
+                    if auth_error is not None:
+                        return auth_error
+                    group_name = str(request.get("group_name", "")).strip()
+                    members = list(request.get("members") or [])
+                    try:
+                        group = controller.db.create_group(owner, group_name, members)
+                    except ValueError as exc:
+                        return encode_response_line(
+                            ok=False,
+                            code=str(exc) or "invalid_request",
+                            message="创建群聊失败",
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="创建群聊成功",
+                        data={"group": group},
+                    )
+
+                if action == "list_groups":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    groups = controller.db.list_groups(username)
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="群列表获取成功",
+                        data={"groups": groups},
+                    )
+
+                if action == "send_group_message":
+                    sender = str(request.get("sender", "")).strip()
+                    auth_error = self._require_authenticated_user(sender)
+                    if auth_error is not None:
+                        return auth_error
+                    group_id = int(request.get("group_id", 0) or 0)
+                    content = str(request.get("content", ""))
+                    encoding_rule = list(request.get("encoding_rule") or [])
+                    try:
+                        encoded_content = (
+                            encode_sensitive_text(content, encoding_rule)
+                            if encoding_rule
+                            else content
+                        )
+                        message = controller.db.send_group_message(
+                            group_id=group_id,
+                            sender=sender,
+                            content=encoded_content,
+                            encoding_rule=encoding_rule,
+                        )
+                    except ValueError as exc:
+                        return encode_response_line(
+                            ok=False,
+                            code=str(exc) or "invalid_request",
+                            message="群消息发送失败",
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="群消息发送成功",
+                        data={"message": message},
+                    )
+
+                if action == "pull_group_messages":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    group_id = int(request.get("group_id", 0) or 0)
+                    since_id = int(request.get("since_id", 0) or 0)
+                    try:
+                        items = controller.db.pull_group_messages(
+                            username,
+                            group_id=group_id,
+                            since_id=since_id,
+                        )
+                    except ValueError as exc:
+                        return encode_response_line(
+                            ok=False,
+                            code=str(exc) or "invalid_request",
+                            message="群消息拉取失败",
+                        )
+                    out: list[dict[str, Any]] = []
+                    for item in items:
+                        mapped = dict(item)
+                        rule = list(mapped.get("encoding_rule") or [])
+                        if rule:
+                            mapped["content"] = decode_sensitive_text(
+                                str(mapped["content"]), rule
+                            )
+                        out.append(mapped)
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="群消息拉取成功",
+                        data={"messages": out},
+                    )
+
+                if action == "send_file":
+                    sender = str(request.get("sender", "")).strip()
+                    auth_error = self._require_authenticated_user(sender)
+                    if auth_error is not None:
+                        return auth_error
+                    receiver = str(request.get("receiver", "")).strip()
+                    file_name = str(request.get("file_name", "")).strip()
+                    file_base64 = str(request.get("file_base64", "")).strip()
+                    try:
+                        file_bytes = base64.b64decode(file_base64.encode("ascii"))
+                        item = controller.db.send_file(
+                            sender=sender,
+                            receiver=receiver,
+                            file_name=file_name,
+                            file_bytes=file_bytes,
+                        )
+                    except Exception:
+                        return encode_response_line(
+                            ok=False,
+                            code="invalid_file",
+                            message="文件发送失败",
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="文件发送成功",
+                        data={"file": item},
+                    )
+
+                if action == "pull_files":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    since_id = int(request.get("since_id", 0) or 0)
+                    peer = request.get("peer")
+                    items = controller.db.pull_files(
+                        username,
+                        since_id=since_id,
+                        peer=str(peer) if peer else None,
+                    )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="文件拉取成功",
+                        data={"files": items},
+                    )
+
                 return encode_response_line(
                     ok=False,
                     code="invalid_request",
@@ -353,12 +764,23 @@ class ServerController(QObject):
 
         return RequestHandler
 
-    def _set_online(self, username: str, online: bool) -> None:
+    def _set_online(
+        self,
+        username: str,
+        online: bool,
+        handler: socketserver.StreamRequestHandler | None = None,
+    ) -> None:
         with self._lock:
             if online:
-                self._online_users[username] = username
+                if handler is not None:
+                    self._online_users[username] = handler
             else:
-                self._online_users.pop(username, None)
+                if handler is None:
+                    self._online_users.pop(username, None)
+                    return
+                current = self._online_users.get(username)
+                if current is handler:
+                    self._online_users.pop(username, None)
 
     def start(self, port: int) -> None:
         if self._server is not None:

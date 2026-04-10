@@ -6,32 +6,33 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QPainter, QPixmap
 
 
-def pixmap_from_avatar_blob(blob: bytes) -> QPixmap:
+def pixmap_from_avatar_blob(blob: bytes, *, size: int = 48) -> QPixmap:
     pm = QPixmap()
     pm.loadFromData(blob)
     if pm.isNull():
         return pm
-    return pm.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    return pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
-def make_placeholder_avatar(seed: str) -> QPixmap:
+def make_placeholder_avatar(seed: str, *, size: int = 48) -> QPixmap:
     h = hashlib.md5(seed.encode("utf-8"), usedforsecurity=False).digest()
     color = QColor(120 + h[0] % 100, 120 + h[1] % 100, 120 + h[2] % 100)
 
-    pm = QPixmap(48, 48)
+    pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
 
     painter = QPainter(pm)
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setBrush(color)
     painter.setPen(Qt.NoPen)
-    painter.drawRoundedRect(0, 0, 48, 48, 10, 10)
+    radius = max(10, int(size * 0.22))
+    painter.drawRoundedRect(0, 0, size, size, radius, radius)
 
     ch = (seed.strip()[:1] or "?").upper()
     painter.setPen(Qt.white)
     font = painter.font()
     font.setBold(True)
-    font.setPointSize(16)
+    font.setPointSize(max(14, int(size * 0.34)))
     painter.setFont(font)
     painter.drawText(pm.rect(), Qt.AlignCenter, ch)
     painter.end()
