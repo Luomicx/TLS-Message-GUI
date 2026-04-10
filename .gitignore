@@ -16,3 +16,5 @@ plans/
 # Local draft artifacts
 .sisyphus/drafts/
 .sisyphus/drafts/ui-ux-optimization.md
+dist/
+build/
