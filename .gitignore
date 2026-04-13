@@ -18,3 +18,6 @@ plans/
 .sisyphus/drafts/ui-ux-optimization.md
 dist/
 build/
+.sisyphus/
+/.claude
+/.claude/settings.local.json
