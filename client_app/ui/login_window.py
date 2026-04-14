@@ -3,7 +3,14 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QComboBox, QDialog, QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QMainWindow,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import BodyLabel, CaptionLabel, InfoBar
 
 from .register_dialog import RegisterDialog
@@ -165,8 +172,10 @@ class LoginWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("安全网络聊天工具 - 客户端登录")
-        self.resize(920, 620)
-        self.setMinimumSize(860, 580)
+        # 优化点：缩小外层窗口尺寸，适配单栏居中卡片，消除巨大留白
+        self.resize(520, 680)
+        self.setMinimumSize(480, 620)
+
         self.register_submitter: Callable[[str, str, str, str], dict] | None = None
         self.recovery_question_loader: Callable[[str], dict] | None = None
         apply_app_style(self)
@@ -177,98 +186,110 @@ class LoginWindow(QMainWindow):
         page.setObjectName("page")
         self.setCentralWidget(page)
 
+        # 根布局：全域居中对齐
         root = QHBoxLayout(page)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(20)
+        # 适当的外边距，让卡片不要紧贴窗口边缘
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setAlignment(Qt.AlignCenter)
 
-        left_panel = make_section_card()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(22, 22, 22, 22)
-        left_layout.setSpacing(16)
-
-        left_layout.addWidget(make_logo_badge(), 0, Qt.AlignLeft)
-
-        hero = make_header_block(
-            "Secure IM",
-            "基于 PyQt-Fluent-Widgets 重写的桌面即时通信客户端，保持 TLS、安全认证、离线消息、文件收发和群聊能力。",
-        )
-        left_layout.addWidget(hero)
-
-        feature_card = make_section_card()
-        feature_layout = QVBoxLayout(feature_card)
-        feature_layout.setContentsMargins(18, 18, 18, 18)
-        feature_layout.setSpacing(10)
-
-        feature_title = BodyLabel(feature_card)
-        feature_title.setText("当前支持")
-        feature_layout.addWidget(feature_title)
-
-        for text in [
-            "连续输错密码后自动锁定账号",
-            "同账号仅允许一台终端在线",
-            "离线消息、文件消息与群聊消息",
-            "心跳在线检测与密码找回",
-        ]:
-            item = CaptionLabel(feature_card)
-            item.setText(f"• {text}")
-            item.setWordWrap(True)
-            feature_layout.addWidget(item)
-
-        left_layout.addWidget(feature_card)
-        left_layout.addStretch(1)
-
+        # 核心登录卡片设计：去除硬编码的高度限制，让其自适应内容
         auth_card = make_section_card()
-        auth_card.setFixedWidth(390)
-        auth_layout = QVBoxLayout(auth_card)
-        auth_layout.setContentsMargins(22, 22, 22, 22)
-        auth_layout.setSpacing(14)
+        auth_card.setFixedWidth(420)
 
-        auth_layout.addWidget(
-            make_header_block("欢迎登录", "请输入账号和密码，连接成功后进入主聊天界面。")
+        auth_layout = QVBoxLayout(auth_card)
+        auth_layout.setContentsMargins(36, 48, 36, 42)
+        auth_layout.setSpacing(20)
+
+        # ================== 顶部：LOGO 与品牌区 ==================
+        logo_layout = QVBoxLayout()
+        logo_layout.setSpacing(0)
+
+        # 获取原生 LOGO，不再暴力强制改变其内部大小以防溢出
+        logo_badge = make_logo_badge()
+
+        # 安全地将 LOGO 水平居中
+        logo_layout.addWidget(logo_badge, 0, Qt.AlignCenter)
+
+        # 强制加入垂直防重叠安全距离
+        logo_layout.addSpacing(24)
+
+        # 品牌大标题
+        brand_title = BodyLabel("Secure IM", auth_card)
+        brand_title.setAlignment(Qt.AlignCenter)
+        brand_title.setStyleSheet(
+            "font-size: 28px; font-weight: 800; letter-spacing: 1px;"
         )
 
-        account_box, self.edit_account = make_labeled_input("账号 Id", "请输入账号 Id")
+        welcome_subtitle = CaptionLabel("欢迎回来，请输入您的凭据", auth_card)
+        welcome_subtitle.setAlignment(Qt.AlignCenter)
+        welcome_subtitle.setStyleSheet("font-size: 14px; color: #777777;")
+
+        logo_layout.addWidget(brand_title)
+        logo_layout.addSpacing(8)
+        logo_layout.addWidget(welcome_subtitle)
+
+        auth_layout.addLayout(logo_layout)
+        auth_layout.addSpacing(16)  # 与表单区域拉开距离
+
+        # ================== 中部：输入表单与状态区 ==================
+        account_box, self.edit_account = make_labeled_input("账号 Id", "请输入账号")
         password_box, self.edit_password = make_labeled_input(
             "密码", "请输入密码", password=True
         )
         auth_layout.addWidget(account_box)
         auth_layout.addWidget(password_box)
 
+        # 记住账号与连接状态
         options = QWidget(auth_card)
         options_layout = QHBoxLayout(options)
         options_layout.setContentsMargins(0, 0, 0, 0)
-        options_layout.setSpacing(12)
         self.chk_remember = make_checkbox("记住账号")
         self.label_connect = CaptionLabel(options)
-        self.label_connect.setText("连接状态：待连接")
+        self.label_connect.setText("待连接")
+        self.label_connect.setStyleSheet("color: #888888;")
         options_layout.addWidget(self.chk_remember)
         options_layout.addStretch(1)
         options_layout.addWidget(self.label_connect)
         auth_layout.addWidget(options)
 
+        # 动态状态提示
         self.label_status = CaptionLabel(auth_card)
         self.label_status.setWordWrap(True)
+        self.label_status.setAlignment(Qt.AlignCenter)
         auth_layout.addWidget(self.label_status)
 
         self.label_attempt_warning = BodyLabel(auth_card)
         self.label_attempt_warning.setWordWrap(True)
+        self.label_attempt_warning.setAlignment(Qt.AlignCenter)
         self.label_attempt_warning.hide()
         auth_layout.addWidget(self.label_attempt_warning)
 
-        self.btn_login = make_primary_action("登录")
+        # ================== 底部：操作按钮与辅助链接 ==================
+        auth_layout.addStretch(1)
+
+        self.btn_login = make_primary_action("登  录")
+        self.btn_login.setFixedHeight(42)
         self.btn_login.clicked.connect(self._emit_login)
         auth_layout.addWidget(self.btn_login)
 
+        # 底部链接均分排列
+        links_widget = QWidget(auth_card)
+        links_layout = QHBoxLayout(links_widget)
+        links_layout.setContentsMargins(4, 12, 4, 0)
+
         self.btn_register = make_link_action("注册新账号")
         self.btn_register.clicked.connect(self.open_register_dialog)
-        auth_layout.addWidget(self.btn_register, 0, Qt.AlignLeft)
 
         self.btn_recover = make_link_action("忘记密码")
         self.btn_recover.clicked.connect(self.open_recover_dialog)
-        auth_layout.addWidget(self.btn_recover, 0, Qt.AlignLeft)
 
-        root.addWidget(left_panel, 1)
-        root.addWidget(auth_card, 0, Qt.AlignVCenter)
+        links_layout.addWidget(self.btn_register)
+        links_layout.addStretch(1)
+        links_layout.addWidget(self.btn_recover)
+
+        auth_layout.addWidget(links_widget)
+
+        root.addWidget(auth_card)
 
     def _emit_login(self) -> None:
         account = self.edit_account.text().strip()
@@ -330,7 +351,9 @@ class LoginWindow(QMainWindow):
             )
             if response.get("ok", False):
                 self.edit_account.setText(payload["nickname"])
-                self.set_status(str(response.get("message", "注册成功，可继续登录")), ok=True)
+                self.set_status(
+                    str(response.get("message", "注册成功，可继续登录")), ok=True
+                )
             else:
                 self.set_status(str(response.get("message", "注册失败")), ok=False)
             return

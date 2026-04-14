@@ -42,7 +42,9 @@ FONT_SIZE_XLARGE = 22
 
 _current_font_size = FONT_SIZE_NORMAL
 _theme_initialized = False
-LOGO_PATH = Path(__file__).resolve().parents[2] / "data" / "北华航天工业学院-logo-512px.png"
+LOGO_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "北华航天工业学院-logo-512px.png"
+)
 
 TLineEdit = TypeVar("TLineEdit", LineEdit, PasswordLineEdit)
 
@@ -59,6 +61,7 @@ def initialize_fluent_theme() -> None:
     if _theme_initialized:
         return
     setTheme(Theme.LIGHT)
+    # 使用干净现代的亮蓝色作为主色调（类似企业微信或钉钉的蓝白分割）
     setThemeColor("#1677FF")
     _theme_initialized = True
 
@@ -113,9 +116,9 @@ def make_font_size_combo() -> tuple[QWidget, QComboBox]:
 
 def make_logo_badge() -> QWidget:
     card = CardWidget()
-    card.setFixedSize(88, 88)
+    card.setFixedSize(64, 64)  # 微信头像通常更小更紧凑
     layout = QVBoxLayout(card)
-    layout.setContentsMargins(8, 8, 8, 8)
+    layout.setContentsMargins(4, 4, 4, 4)
     layout.setSpacing(0)
 
     logo = QLabel(card)
@@ -123,12 +126,13 @@ def make_logo_badge() -> QWidget:
     pixmap = QPixmap(str(LOGO_PATH))
     if not pixmap.isNull():
         logo.setPixmap(
-            pixmap.scaled(70, 70, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pixmap.scaled(56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
     else:
         fallback = TitleLabel(card)
         fallback.setAlignment(Qt.AlignCenter)
         fallback.setText("SI")
+        fallback.setStyleSheet("color: #1677FF;")
         layout.addStretch(1)
         layout.addWidget(fallback)
         layout.addStretch(1)
@@ -155,13 +159,14 @@ def make_header_block(title: str, subtitle: str) -> QWidget:
     block = QWidget()
     layout = QVBoxLayout(block)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
+    layout.setSpacing(4)  # 缩减间距，使其更紧凑
 
     title_label = TitleLabel(block)
     title_label.setWordWrap(True)
     title_label.setText(title)
 
-    subtitle_label = SubtitleLabel(block)
+    subtitle_label = CaptionLabel(block)  # 微信的副标题通常更小、颜色更淡
+    subtitle_label.setStyleSheet("color: #999999;")
     subtitle_label.setWordWrap(True)
     subtitle_label.setText(subtitle)
 
@@ -176,7 +181,7 @@ def make_labeled_input(
     container = QWidget()
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(8)
+    layout.setSpacing(6)
 
     label = BodyLabel(container)
     label.setWordWrap(True)
@@ -188,7 +193,7 @@ def make_labeled_input(
     else:
         edit = LineEdit(container)
     edit.setPlaceholderText(placeholder)
-    edit.setMinimumHeight(46)
+    edit.setMinimumHeight(40)  # 高度适度调低，符合桌面端习惯
 
     layout.addWidget(label)
     layout.addWidget(edit)
@@ -199,7 +204,7 @@ def make_primary_action(text: str, icon=FIF.SEND) -> PrimaryPushButton:
     button = PrimaryPushButton()
     button.setText(text)
     button.setIcon(icon)
-    button.setMinimumHeight(46)
+    button.setMinimumHeight(40)
     button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     return button
 
@@ -208,7 +213,7 @@ def make_secondary_action(text: str, icon=FIF.ADD) -> PushButton:
     button = PushButton()
     button.setText(text)
     button.setIcon(icon)
-    button.setMinimumHeight(46)
+    button.setMinimumHeight(40)
     button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     return button
 
@@ -217,7 +222,7 @@ def make_link_action(text: str, icon=FIF.LINK) -> TransparentPushButton:
     button = TransparentPushButton()
     button.setText(text)
     button.setIcon(icon)
-    button.setMinimumHeight(46)
+    button.setMinimumHeight(40)
     button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     return button
 
@@ -244,41 +249,56 @@ def make_checkbox(text: str) -> CheckBox:
 
 
 def _window_stylesheet() -> str:
+    # 这是实现微信蓝白风格的核心
     return """
     QMainWindow, QDialog {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-            stop:0 #F4F8FF, stop:0.55 #F8FBFF, stop:1 #EEF6F3);
+        background: #FFFFFF; /* 全局底层纯白 */
     }
     QFrame#page, QWidget#page {
         background: transparent;
     }
+    
+    /* 侧边栏/功能区的卡片：纯白，加极淡的边框区分 */
+    CardWidget#sectionCard {
+        background: #FFFFFF;
+        border: 1px solid #EBEBEB;
+        border-radius: 6px; /* 减小圆角，显得更专业干练 */
+    }
+    
+    /* Logo 徽标：去底色，融入背景 */
     CardWidget#brandBadge {
-        background: rgba(255, 255, 255, 0.92);
-        border: 1px solid rgba(65, 74, 160, 0.18);
-        border-radius: 24px;
-    }
-    CardWidget#brandBadge QLabel,
-    CardWidget#brandBadge TitleLabel {
         background: transparent;
+        border: none;
+        border-radius: 6px;
     }
+    
+    /* 聊天页面的顶部信息栏：白底，底部有一条细线分割 */
     CardWidget#chatHero {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-            stop:0 rgba(255, 255, 255, 0.92),
-            stop:1 rgba(230, 241, 255, 0.96));
-        border: 1px solid rgba(22, 119, 255, 0.12);
-        border-radius: 26px;
+        background: #FFFFFF;
+        border: none;
+        border-bottom: 1px solid #EBEBEB;
+        border-radius: 0px; 
     }
+    
+    /* 聊天记录展示区：微信特色的浅灰底色，无边框 */
     TextEdit#transcriptView {
-        background: rgba(255, 255, 255, 0.9);
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 22px;
+        background: #F5F6F7; /* 微信常用的浅灰底色 */
+        border: none;
+        border-radius: 0px;
         padding: 16px;
-        selection-background-color: #B8D6FF;
+        selection-background-color: #1677FF;
+        selection-color: #FFFFFF;
     }
+    
+    /* 隐藏额外的面板背景 */
     QFrame#panel {
         background: transparent;
     }
+    
+    /* 底部状态栏融入界面 */
     QStatusBar {
-        background: rgba(255, 255, 255, 0.55);
+        background: #FFFFFF;
+        border-top: 1px solid #EBEBEB;
+        color: #666666;
     }
     """

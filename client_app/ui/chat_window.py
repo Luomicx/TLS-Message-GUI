@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QSplitter,
 )
 from qfluentwidgets import (
     CaptionLabel,
@@ -25,7 +26,12 @@ from qfluentwidgets import (
     TextEdit,
 )
 
-from .theme import apply_app_style, make_header_block, make_logo_badge, make_section_card
+from .theme import (
+    apply_app_style,
+    make_header_block,
+    make_logo_badge,
+    make_section_card,
+)
 
 
 class ChatWindow(QMainWindow):
@@ -79,9 +85,7 @@ class ChatWindow(QMainWindow):
         self.setMinimumSize(min_width, min_height)
         self.setGeometry(self._centered_rect(available, target_width, target_height))
 
-    def _centered_rect(
-        self, available: QRect, width: int, height: int
-    ) -> QRect:
+    def _centered_rect(self, available: QRect, width: int, height: int) -> QRect:
         left = available.left() + max(0, (available.width() - width) // 2)
         top = available.top() + max(0, (available.height() - height) // 2)
         return QRect(left, top, width, height)
@@ -156,7 +160,9 @@ class ChatWindow(QMainWindow):
         nav_layout.addWidget(self.btn_search, 1)
         layout.addWidget(nav)
 
-        session_header = make_header_block("最近会话", "双击会话进入聊天，支持好友会话和群会话。")
+        session_header = make_header_block(
+            "最近会话", "双击会话进入聊天，支持好友会话和群会话。"
+        )
         layout.addWidget(session_header)
 
         self.list_sessions = ListWidget(panel)
@@ -223,9 +229,11 @@ class ChatWindow(QMainWindow):
     def _build_chat_page(self) -> QWidget:
         page = make_section_card()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(18)
+        # 适当减小外边距，腾出更多呼吸空间
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
+        # 1. 顶部信息栏 (Hero)
         top = QWidget(page)
         top_layout = QHBoxLayout(top)
         top_layout.setContentsMargins(0, 0, 0, 0)
@@ -234,26 +242,24 @@ class ChatWindow(QMainWindow):
         hero = CardWidget(page)
         hero.setObjectName("chatHero")
         hero_layout = QHBoxLayout(hero)
-        hero_layout.setContentsMargins(20, 20, 20, 20)
+        hero_layout.setContentsMargins(16, 16, 16, 16)  # 减小内边距
         hero_layout.setSpacing(20)
 
         title_box = QWidget(hero)
         title_layout = QVBoxLayout(title_box)
         title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(6)
+        title_layout.setSpacing(4)
         self.label_peer_badge = CaptionLabel(title_box)
         self.label_peer_badge.setText("未选中会话")
         self.label_peer_title = StrongBodyLabel(title_box)
         self.label_peer_title.setText("请选择会话")
         self.label_peer_subtitle = CaptionLabel(title_box)
-        self.label_peer_subtitle.setWordWrap(True)
         self.label_peer_subtitle.setText("支持文本消息、文件消息与群聊消息。")
         self.label_peer_meta = CaptionLabel(title_box)
-        self.label_peer_meta.setWordWrap(True)
         self.label_peer_meta.setText("群聊会显示成员信息，私聊会显示连接状态。")
         self.label_download_root = CaptionLabel(title_box)
-        self.label_download_root.setWordWrap(True)
         self.label_download_root.setText("接收目录：尚未设置")
+
         title_layout.addWidget(self.label_peer_badge)
         title_layout.addWidget(self.label_peer_title)
         title_layout.addWidget(self.label_peer_subtitle)
@@ -262,7 +268,6 @@ class ChatWindow(QMainWindow):
         hero_layout.addWidget(title_box, 1)
 
         action_box = QWidget(hero)
-        action_box.setMinimumWidth(176)
         action_layout = QVBoxLayout(action_box)
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(8)
@@ -270,24 +275,20 @@ class ChatWindow(QMainWindow):
         self.btn_send_file = PushButton(action_box)
         self.btn_send_file.setText("发送文件")
         self.btn_send_file.setIcon(FIF.FOLDER)
-        self.btn_send_file.setMinimumWidth(150)
-        self.btn_send_file.setMinimumHeight(44)
-        self.btn_send_file.clicked.connect(self._emit_send_file)
+        self.btn_send_file.setMinimumHeight(38)  # 稍微调低按钮高度
 
         self.btn_select_download_root = PushButton(action_box)
         self.btn_select_download_root.setText("接收目录")
         self.btn_select_download_root.setIcon(FIF.DOWNLOAD)
-        self.btn_select_download_root.setMinimumWidth(150)
-        self.btn_select_download_root.setMinimumHeight(44)
-        self.btn_select_download_root.clicked.connect(
-            self.download_root_requested.emit
-        )
+        self.btn_select_download_root.setMinimumHeight(38)
 
         self.btn_group = PushButton(action_box)
         self.btn_group.setText("创建群聊")
         self.btn_group.setIcon(FIF.PEOPLE)
-        self.btn_group.setMinimumWidth(150)
-        self.btn_group.setMinimumHeight(44)
+        self.btn_group.setMinimumHeight(38)
+
+        self.btn_send_file.clicked.connect(self._emit_send_file)
+        self.btn_select_download_root.clicked.connect(self.download_root_requested.emit)
         self.btn_group.clicked.connect(self.create_group_requested.emit)
 
         action_layout.addWidget(self.btn_send_file)
@@ -297,55 +298,68 @@ class ChatWindow(QMainWindow):
         hero_layout.addWidget(action_box, 0)
 
         top_layout.addWidget(hero, 1)
-        layout.addWidget(top)
+        layout.addWidget(top, 0)  # 顶部不拉伸
 
-        self.message_area = TextEdit(page)
+        # ==========================================
+        # 引入 QSplitter 允许用户自由拖拽调整消息区和输入区的高度
+        # ==========================================
+        splitter = QSplitter(Qt.Vertical, page)
+        splitter.setHandleWidth(4)  # 设置分割条宽度
+        splitter.setChildrenCollapsible(False)  # 防止把某一区域完全拖没
+
+        # 2. 消息记录区
+        self.message_area = TextEdit(splitter)
         self.message_area.setObjectName("transcriptView")
         self.message_area.setReadOnly(True)
         self.message_area.setPlaceholderText("当前没有消息，请先选择会话。")
-        self.message_area.setMinimumHeight(420)
-        layout.addWidget(self.message_area, 1)
+        self.message_area.setMinimumHeight(150)  # 调低最小限制，赋予弹性
+        splitter.addWidget(self.message_area)
 
-        composer = CardWidget(page)
+        # 3. 输入发送区 (Composer)
+        composer = CardWidget(splitter)
         composer_layout = QVBoxLayout(composer)
-        composer_layout.setContentsMargins(18, 18, 18, 18)
-        composer_layout.setSpacing(12)
+        composer_layout.setContentsMargins(16, 12, 16, 12)
+        composer_layout.setSpacing(10)
 
-        composer_header = QWidget(composer)
-        composer_header_layout = QHBoxLayout(composer_header)
-        composer_header_layout.setContentsMargins(0, 0, 0, 0)
-        composer_header_layout.setSpacing(8)
-        composer_hint = CaptionLabel(composer_header)
-        composer_hint.setText("发送内容会通过 TLS 通道提交到服务端。")
-        composer_header_layout.addWidget(composer_hint)
-        self.label_compose_tip = CaptionLabel(composer_header)
-        self.label_compose_tip.setText("群聊消息会显示发送者，文件消息会记录保存位置。")
-        composer_header_layout.addWidget(self.label_compose_tip)
-        composer_header_layout.addStretch(1)
-        composer_layout.addWidget(composer_header)
+        # 将冗长的提示语精简为一行，节省垂直空间
+        composer_hint = CaptionLabel(composer)
+        composer_hint.setText("TLS 安全通道就绪 · 群聊显示发送者 · 文件记录保存位置")
+        composer_hint.setStyleSheet("color: #888888;")
+        composer_layout.addWidget(composer_hint)
 
         self.edit_message = TextEdit(composer)
-        self.edit_message.setMinimumHeight(170)
-        self.edit_message.setMaximumHeight(240)
+        self.edit_message.setMinimumHeight(70)  # 默认高度设为正常聊天框的三四行高
+        self.edit_message.setMaximumHeight(200)  # 防止拉得过高
         self.edit_message.setPlaceholderText("输入消息内容...")
-        composer_layout.addWidget(self.edit_message)
+        composer_layout.addWidget(self.edit_message, 1)
 
+        # 底部操作行
         action_row = QWidget(composer)
-        action_layout = QHBoxLayout(action_row)
-        action_layout.setContentsMargins(0, 0, 0, 0)
-        action_layout.setSpacing(8)
+        action_row_layout = QHBoxLayout(action_row)
+        action_row_layout.setContentsMargins(0, 0, 0, 0)
+
         self.label_runtime_status = CaptionLabel(action_row)
         self.label_runtime_status.setText("连接状态：在线")
-        action_layout.addWidget(self.label_runtime_status)
-        action_layout.addStretch(1)
+        action_row_layout.addWidget(self.label_runtime_status)
+
+        action_row_layout.addStretch(1)
+
         self.btn_send = PrimaryPushButton(action_row)
         self.btn_send.setText("发送")
         self.btn_send.setIcon(FIF.SEND)
+        self.btn_send.setMinimumWidth(100)
         self.btn_send.clicked.connect(self._emit_send_message)
-        action_layout.addWidget(self.btn_send)
-        composer_layout.addWidget(action_row)
+        action_row_layout.addWidget(self.btn_send)
 
-        layout.addWidget(composer)
+        composer_layout.addWidget(action_row)
+        splitter.addWidget(composer)
+
+        # 设置默认比例 (例如消息区占 70%，输入区占 30%)
+        splitter.setStretchFactor(0, 7)
+        splitter.setStretchFactor(1, 3)
+
+        layout.addWidget(splitter, 1)  # 分割器占据主体拉伸空间
+
         return page
 
     def _build_friends_page(self) -> QWidget:
@@ -355,7 +369,9 @@ class ChatWindow(QMainWindow):
         layout.setSpacing(14)
 
         layout.addWidget(
-            make_header_block("好友列表", "双击好友可切换会话，在线状态会随心跳自动刷新。")
+            make_header_block(
+                "好友列表", "双击好友可切换会话，在线状态会随心跳自动刷新。"
+            )
         )
 
         self.list_friends = ListWidget(page)
@@ -370,7 +386,9 @@ class ChatWindow(QMainWindow):
         layout.setSpacing(14)
 
         layout.addWidget(
-            make_header_block("搜索与添加好友", "支持用户名模糊搜索和用户 Id 精准搜索。")
+            make_header_block(
+                "搜索与添加好友", "支持用户名模糊搜索和用户 Id 精准搜索。"
+            )
         )
 
         mode_row = QWidget(page)
@@ -404,7 +422,9 @@ class ChatWindow(QMainWindow):
         layout.addWidget(mode_row)
 
         self.list_search_result = ListWidget(page)
-        self.list_search_result.itemDoubleClicked.connect(self._emit_add_friend_from_result)
+        self.list_search_result.itemDoubleClicked.connect(
+            self._emit_add_friend_from_result
+        )
         layout.addWidget(self.list_search_result, 1)
 
         self.label_search_hint = CaptionLabel(page)
@@ -735,7 +755,9 @@ class ChatWindow(QMainWindow):
         self.current_peer = raw_peer
         self._apply_session_summary(raw_peer, self._session_payloads.get(raw_peer))
 
-    def _session_sort_key(self, payload: dict[str, object]) -> tuple[int, int, str, str]:
+    def _session_sort_key(
+        self, payload: dict[str, object]
+    ) -> tuple[int, int, str, str]:
         unread_count = self._unread_count(payload)
         has_offline_messages = bool(payload.get("has_offline_messages"))
         attention_rank = 0 if unread_count > 0 or has_offline_messages else 1
