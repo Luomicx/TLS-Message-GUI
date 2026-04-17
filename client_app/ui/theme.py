@@ -40,6 +40,8 @@ FONT_SIZE_NORMAL = 18
 FONT_SIZE_LARGE = 20
 FONT_SIZE_XLARGE = 22
 
+WECHAT_GREEN = "#95EC69"
+
 _current_font_size = FONT_SIZE_NORMAL
 _theme_initialized = False
 LOGO_PATH = (
@@ -155,6 +157,52 @@ def make_icon_placeholder(text: str, size: int = 28) -> QWidget:
     return button
 
 
+_AVATAR_COLORS = [
+    "#1677FF", "#52C41A", "#FA8C16", "#722ED1",
+    "#EB2F96", "#13C2C2", "#FAAD14", "#2F54EB",
+]
+
+
+def _avatar_color_for(text: str) -> str:
+    idx = sum(ord(ch) for ch in text) % len(_AVATAR_COLORS)
+    return _AVATAR_COLORS[idx]
+
+
+def make_avatar_placeholder(text: str, size: int = 40) -> QWidget:
+    container = QWidget()
+    container.setFixedSize(size, size)
+    color = _avatar_color_for(text)
+    letter = text[0].upper() if text else "?"
+    container.setStyleSheet(
+        f"background:{color};border-radius:{size // 2}px;"
+    )
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    label = QLabel(container)
+    label.setAlignment(Qt.AlignCenter)
+    label.setText(letter)
+    label.setStyleSheet(
+        f"color:white;font-size:{int(size * 0.45)}px;font-weight:bold;background:transparent;"
+    )
+    layout.addWidget(label)
+    container.setAttribute(Qt.WA_TransparentForMouseEvents)
+    return container
+
+
+def make_nav_button(icon: FIF, tooltip: str) -> ToolButton:
+    btn = ToolButton()
+    btn.setIcon(icon)
+    btn.setToolTip(tooltip)
+    btn.setFixedSize(42, 42)
+    btn.setStyleSheet(
+        "ToolButton { background:transparent; border:none; border-radius:6px; }"
+        "ToolButton:hover { background:#3D3D3D; }"
+        "ToolButton[navSelected='true'] { background:#3D3D3D; }"
+    )
+    return btn
+
+
 def make_header_block(title: str, subtitle: str) -> QWidget:
     block = QWidget()
     layout = QVBoxLayout(block)
@@ -249,56 +297,100 @@ def make_checkbox(text: str) -> CheckBox:
 
 
 def _window_stylesheet() -> str:
-    # 这是实现微信蓝白风格的核心
     return """
     QMainWindow, QDialog {
-        background: #FFFFFF; /* 全局底层纯白 */
+        background: #F5F5F5;
     }
     QFrame#page, QWidget#page {
         background: transparent;
     }
-    
-    /* 侧边栏/功能区的卡片：纯白，加极淡的边框区分 */
+
+    /* 导航栏 */
+    QWidget#navRail {
+        background: #2E2E2E;
+        border-right: 1px solid #1A1A1A;
+    }
+
+    /* 中间面板 */
+    QWidget#middlePanel {
+        background: #E7E7E7;
+        border-right: 1px solid #D0D0D0;
+    }
+
+    /* 聊天区 */
+    QWidget#chatArea {
+        background: #F5F5F5;
+    }
+
+    /* 侧边栏/功能区的卡片 */
     CardWidget#sectionCard {
         background: #FFFFFF;
         border: 1px solid #EBEBEB;
-        border-radius: 6px; /* 减小圆角，显得更专业干练 */
+        border-radius: 6px;
     }
-    
-    /* Logo 徽标：去底色，融入背景 */
+
+    /* Logo 徽标 */
     CardWidget#brandBadge {
         background: transparent;
         border: none;
         border-radius: 6px;
     }
-    
-    /* 聊天页面的顶部信息栏：白底，底部有一条细线分割 */
-    CardWidget#chatHero {
-        background: #FFFFFF;
-        border: none;
-        border-bottom: 1px solid #EBEBEB;
-        border-radius: 0px; 
+
+    /* 聊天页面的顶部信息栏 */
+    QWidget#chatHeader {
+        background: #F5F5F5;
+        border-bottom: 1px solid #D9D9D9;
     }
-    
-    /* 聊天记录展示区：微信特色的浅灰底色，无边框 */
+
+    /* 聊天记录展示区 */
     TextEdit#transcriptView {
-        background: #F5F6F7; /* 微信常用的浅灰底色 */
+        background: #F5F5F5;
         border: none;
         border-radius: 0px;
-        padding: 16px;
+        padding: 12px;
         selection-background-color: #1677FF;
         selection-color: #FFFFFF;
     }
-    
+
+    /* 输入区 */
+    QWidget#composer {
+        background: #F5F5F5;
+        border-top: 1px solid #D9D9D9;
+    }
+
+    /* 中间面板搜索框 */
+    SearchLineEdit#panelSearch {
+        background: #E7E7E7;
+        border: none;
+        border-radius: 4px;
+    }
+
     /* 隐藏额外的面板背景 */
     QFrame#panel {
         background: transparent;
     }
-    
-    /* 底部状态栏融入界面 */
+
+    /* 底部状态栏 */
     QStatusBar {
-        background: #FFFFFF;
-        border-top: 1px solid #EBEBEB;
+        background: #F5F5F5;
+        border-top: 1px solid #D9D9D9;
         color: #666666;
+    }
+
+    /* 中间面板列表项 hover */
+    QListWidget#sessionList, QListWidget#friendList, QListWidget#searchResultList {
+        background: #E7E7E7;
+        border: none;
+        outline: none;
+    }
+    QListWidget#sessionList::item:hover,
+    QListWidget#friendList::item:hover,
+    QListWidget#searchResultList::item:hover {
+        background: #D9D9D9;
+    }
+    QListWidget#sessionList::item:selected,
+    QListWidget#friendList::item:selected,
+    QListWidget#searchResultList::item:selected {
+        background: #C9C9C9;
     }
     """
