@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout, QWidget
-from qfluentwidgets import BodyLabel, CaptionLabel
+from qfluentwidgets import CaptionLabel
 
 from .theme import (
     apply_app_style,
     make_checkbox,
     make_header_block,
     make_labeled_input,
+    make_logo_badge,
     make_primary_action,
     make_secondary_action,
     make_section_card,
@@ -19,29 +20,33 @@ class RegisterDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("注册账号")
-        self.resize(460, 460)
+        self.resize(560, 620)
+        self.setMinimumSize(520, 580)
         apply_app_style(self)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 28, 28, 28)
-        root.setSpacing(18)
+        root.setContentsMargins(30, 26, 30, 26)
+        root.setSpacing(16)
 
-        root.addWidget(
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+
+        header_layout.addWidget(make_logo_badge(72), 0, Qt.AlignHCenter)
+        header_layout.addWidget(
             make_header_block(
                 "创建新账号",
-                "基于 Fluent 组件重构后的注册表单，保持现有注册协议和校验逻辑。",
+                "",
             )
         )
 
+        root.addWidget(header)
+
         card = make_section_card()
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(22, 22, 22, 22)
-        card_layout.setSpacing(16)
-
-        self._hint = BodyLabel(card)
-        self._hint.setText("注册后将直接使用该用户名登录客户端。")
-        self._hint.setWordWrap(True)
-        card_layout.addWidget(self._hint)
+        card_layout.setContentsMargins(24, 24, 24, 24)
+        card_layout.setSpacing(14)
 
         nickname_box, self.edit_nickname = make_labeled_input("用户名", "请输入账号 Id")
         password_box, self.edit_password = make_labeled_input(
@@ -67,6 +72,7 @@ class RegisterDialog(QDialog):
 
         self.label_result = CaptionLabel(card)
         self.label_result.setWordWrap(True)
+        self.label_result.setMinimumHeight(22)
         card_layout.addWidget(self.label_result)
 
         button_row = QWidget(card)
@@ -76,6 +82,8 @@ class RegisterDialog(QDialog):
 
         self.btn_submit = make_primary_action("注册")
         self.btn_cancel = make_secondary_action("返回登录")
+        self.btn_submit.setFixedHeight(42)
+        self.btn_cancel.setFixedHeight(42)
         self.btn_submit.clicked.connect(self._on_submit)
         self.btn_cancel.clicked.connect(self.reject)
 

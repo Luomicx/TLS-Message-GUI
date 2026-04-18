@@ -35,10 +35,10 @@ from qfluentwidgets import (
     setThemeColor,
 )
 
-FONT_SIZE_SMALL = 16
-FONT_SIZE_NORMAL = 18
-FONT_SIZE_LARGE = 20
-FONT_SIZE_XLARGE = 22
+FONT_SIZE_SMALL = 13
+FONT_SIZE_NORMAL = 14
+FONT_SIZE_LARGE = 15
+FONT_SIZE_XLARGE = 17
 
 WECHAT_GREEN = "#95EC69"
 
@@ -100,10 +100,10 @@ def make_font_size_combo() -> tuple[QWidget, QComboBox]:
 
     combo = ComboBox()
     combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-    combo.addItem("100%", userData=FONT_SIZE_SMALL)
-    combo.addItem("115%", userData=FONT_SIZE_NORMAL)
-    combo.addItem("130%", userData=FONT_SIZE_LARGE)
-    combo.addItem("145%", userData=FONT_SIZE_XLARGE)
+    combo.addItem("90%", userData=FONT_SIZE_SMALL)
+    combo.addItem("100%", userData=FONT_SIZE_NORMAL)
+    combo.addItem("110%", userData=FONT_SIZE_LARGE)
+    combo.addItem("120%", userData=FONT_SIZE_XLARGE)
 
     values = [FONT_SIZE_SMALL, FONT_SIZE_NORMAL, FONT_SIZE_LARGE, FONT_SIZE_XLARGE]
     current = get_font_size()
@@ -116,25 +116,38 @@ def make_font_size_combo() -> tuple[QWidget, QComboBox]:
     return container, combo
 
 
-def make_logo_badge() -> QWidget:
+def make_logo_badge(size: int = 64) -> QWidget:
     card = CardWidget()
-    card.setFixedSize(64, 64)  # 微信头像通常更小更紧凑
+    card.setFixedSize(size, size)
     layout = QVBoxLayout(card)
-    layout.setContentsMargins(4, 4, 4, 4)
+    inner_padding = max(2, size // 24)
+    layout.setContentsMargins(inner_padding, inner_padding, inner_padding, inner_padding)
     layout.setSpacing(0)
 
     logo = QLabel(card)
     logo.setAlignment(Qt.AlignCenter)
     pixmap = QPixmap(str(LOGO_PATH))
     if not pixmap.isNull():
+        available_size = min(
+            size - inner_padding * 2,
+            pixmap.width(),
+            pixmap.height(),
+        )
         logo.setPixmap(
-            pixmap.scaled(56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pixmap.scaled(
+                available_size,
+                available_size,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
         )
     else:
         fallback = TitleLabel(card)
         fallback.setAlignment(Qt.AlignCenter)
         fallback.setText("SI")
-        fallback.setStyleSheet("color: #1677FF;")
+        fallback.setStyleSheet(
+            f"color: #1677FF; font-size: {max(18, int(size * 0.32))}px; font-weight: 700;"
+        )
         layout.addStretch(1)
         layout.addWidget(fallback)
         layout.addStretch(1)

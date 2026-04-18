@@ -47,7 +47,7 @@ class RecoverPasswordDialog(QDialog):
         root.addWidget(
             make_header_block(
                 "重置登录密码",
-                "请输入账号、找回问题、找回答案和新密码。该流程会调用服务端的密码找回接口。",
+                "",
             )
         )
 
@@ -185,83 +185,128 @@ class LoginWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("安全网络聊天工具 - 客户端登录")
-        self.resize(520, 620)
-        self.setMinimumSize(460, 560)
+        self.resize(920, 620)
+        self.setMinimumSize(840, 560)
 
         self.register_submitter: Callable[[str, str, str, str], dict] | None = None
         self.recovery_question_loader: Callable[[str], dict] | None = None
 
-        apply_app_style(self)
         self._build_ui()
+        apply_app_style(self)
 
     def _build_ui(self) -> None:
         page = QWidget()
-        page.setObjectName("page")
+        page.setObjectName("loginPage")
         self.setCentralWidget(page)
+        page.setStyleSheet(
+            """
+            QWidget#loginPage {
+                background: #EEF2F6;
+            }
+            QWidget#loginHero {
+                background: #1F5FAF;
+            }
+            QWidget#loginFormPanel {
+                background: #F7F8FA;
+            }
+            CardWidget#loginFormCard {
+                background: #FFFFFF;
+                border: 1px solid #E6EAF0;
+                border-radius: 24px;
+            }
+            QWidget#loginStatusRow {
+                background: #F7F8FA;
+                border: 1px solid #E5E7EB;
+                border-radius: 12px;
+            }
+            """
+        )
 
-        root = QVBoxLayout(page)
-        root.setContentsMargins(18, 14, 18, 14)
+        root = QHBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        shell = QWidget(page)
-        shell_layout = QVBoxLayout(shell)
-        shell_layout.setContentsMargins(0, 0, 0, 0)
-        shell_layout.setSpacing(0)
+        hero_panel = QWidget(page)
+        hero_panel.setObjectName("loginHero")
+        hero_layout = QVBoxLayout(hero_panel)
+        hero_layout.setContentsMargins(40, 36, 40, 36)
+        hero_layout.setSpacing(18)
 
-        auth_card = make_section_card()
-        auth_card.setFixedWidth(410)
-        auth_card.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
+        hero_layout.addStretch(1)
 
-        card_outer = QVBoxLayout(auth_card)
-        card_outer.setContentsMargins(28, 24, 28, 22)
-        card_outer.setSpacing(0)
+        hero_content = QWidget(hero_panel)
+        hero_content_layout = QVBoxLayout(hero_content)
+        hero_content_layout.setContentsMargins(0, 0, 0, 0)
+        hero_content_layout.setSpacing(14)
 
-        # 顶部品牌区：保留 logo，但整体更收紧，更像现代桌面应用
-        brand_box = QWidget(auth_card)
-        brand_layout = QVBoxLayout(brand_box)
-        brand_layout.setContentsMargins(0, 0, 0, 0)
-        brand_layout.setSpacing(6)
+        logo_badge = make_logo_badge(168)
+        hero_content_layout.addWidget(logo_badge, 0, Qt.AlignCenter)
 
-        logo_badge = make_logo_badge()
-        brand_layout.addWidget(logo_badge, 0, Qt.AlignHCenter)
-
-        brand_title = BodyLabel("Secure IM", brand_box)
+        brand_title = BodyLabel("Secure IM", hero_content)
         brand_title.setAlignment(Qt.AlignCenter)
         brand_title.setStyleSheet(
-            "font-size: 24px; font-weight: 800; letter-spacing: 0.5px;"
+            "color:#FFFFFF;font-size:30px;font-weight:800;letter-spacing:0.6px;"
         )
+        hero_content_layout.addWidget(brand_title)
 
-        brand_subtitle = CaptionLabel("欢迎回来，登录后继续使用安全聊天服务", brand_box)
-        brand_subtitle.setAlignment(Qt.AlignCenter)
-        brand_subtitle.setWordWrap(True)
-        brand_subtitle.setStyleSheet(
-            "font-size: 12px; color: #7A7A7A; line-height: 1.5;"
+        hero_layout.addWidget(hero_content, 0, Qt.AlignVCenter)
+        hero_layout.addStretch(1)
+
+        form_panel = QWidget(page)
+        form_panel.setObjectName("loginFormPanel")
+        form_panel_layout = QVBoxLayout(form_panel)
+        form_panel_layout.setContentsMargins(42, 34, 42, 34)
+        form_panel_layout.setSpacing(0)
+        form_panel_layout.addStretch(1)
+
+        auth_card = make_section_card()
+        auth_card.setObjectName("loginFormCard")
+        auth_card.setMinimumWidth(380)
+        auth_card.setMaximumWidth(460)
+        auth_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+
+        card_outer = QVBoxLayout(auth_card)
+        card_outer.setContentsMargins(30, 28, 30, 26)
+        card_outer.setSpacing(0)
+
+        form_intro = QWidget(auth_card)
+        form_intro_layout = QVBoxLayout(form_intro)
+        form_intro_layout.setContentsMargins(0, 0, 0, 0)
+        form_intro_layout.setSpacing(6)
+
+        intro_tag = CaptionLabel("账号登录", form_intro)
+        intro_tag.setStyleSheet(
+            "color:#1677FF;background:#EAF3FF;border-radius:10px;"
+            "font-size:12px;font-weight:700;padding:5px 10px;"
         )
+        intro_title = BodyLabel("欢迎登录", form_intro)
+        intro_title.setStyleSheet("font-size:24px;font-weight:800;color:#1F2937;")
 
-        brand_layout.addWidget(brand_title)
-        brand_layout.addWidget(brand_subtitle)
+        form_intro_layout.addWidget(intro_tag, 0, Qt.AlignLeft)
+        form_intro_layout.addWidget(intro_title)
 
-        card_outer.addWidget(brand_box)
+        card_outer.addWidget(form_intro)
         card_outer.addSpacing(16)
 
-        # 表单区
         form_box = QWidget(auth_card)
-        form_layout = QVBoxLayout(form_box)
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(12)
+        form_box_layout = QVBoxLayout(form_box)
+        form_box_layout.setContentsMargins(0, 0, 0, 0)
+        form_box_layout.setSpacing(14)
 
         account_box, self.edit_account = make_labeled_input("账号", "请输入账号")
         password_box, self.edit_password = make_labeled_input(
             "密码", "请输入密码", password=True
         )
+        self.edit_account.setMinimumHeight(44)
+        self.edit_password.setMinimumHeight(44)
 
-        form_layout.addWidget(account_box)
-        form_layout.addWidget(password_box)
+        form_box_layout.addWidget(account_box)
+        form_box_layout.addWidget(password_box)
 
-        # 选项行：记住账号 + 连接状态
         options = QWidget(form_box)
+        options.setObjectName("loginStatusRow")
         options_layout = QHBoxLayout(options)
-        options_layout.setContentsMargins(0, 2, 0, 0)
+        options_layout.setContentsMargins(14, 10, 14, 10)
         options_layout.setSpacing(8)
 
         self.chk_remember = make_checkbox("记住账号")
@@ -286,35 +331,33 @@ class LoginWindow(QMainWindow):
         options_layout.addStretch(1)
         options_layout.addWidget(status_wrap, 0, Qt.AlignRight)
 
-        form_layout.addWidget(options)
+        form_box_layout.addWidget(options)
 
-        # 状态区：固定最小高度，避免提示出现时界面跳动
         self.label_status = CaptionLabel(form_box)
         self.label_status.setWordWrap(True)
-        self.label_status.setAlignment(Qt.AlignCenter)
-        self.label_status.setMinimumHeight(22)
+        self.label_status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.label_status.setMinimumHeight(24)
         self.label_status.setStyleSheet("color:#888888; font-size:12px;")
-        form_layout.addWidget(self.label_status)
+        form_box_layout.addWidget(self.label_status)
 
         self.label_attempt_warning = BodyLabel(form_box)
         self.label_attempt_warning.setWordWrap(True)
-        self.label_attempt_warning.setAlignment(Qt.AlignCenter)
+        self.label_attempt_warning.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.label_attempt_warning.hide()
-        form_layout.addWidget(self.label_attempt_warning)
+        form_box_layout.addWidget(self.label_attempt_warning)
 
         card_outer.addWidget(form_box)
-        card_outer.addSpacing(14)
+        card_outer.addSpacing(18)
 
-        # 主操作按钮
         self.btn_login = make_primary_action("登 录")
-        self.btn_login.setFixedHeight(40)
+        self.btn_login.setFixedHeight(44)
+        self.btn_login.setStyleSheet("font-size:14px;font-weight:700;")
         self.btn_login.clicked.connect(self._emit_login)
         card_outer.addWidget(self.btn_login)
 
-        # 底部辅助链接
         links_widget = QWidget(auth_card)
         links_layout = QHBoxLayout(links_widget)
-        links_layout.setContentsMargins(0, 8, 0, 0)
+        links_layout.setContentsMargins(0, 10, 0, 0)
         links_layout.setSpacing(8)
 
         self.btn_register = make_link_action("注册新账号")
@@ -328,9 +371,14 @@ class LoginWindow(QMainWindow):
         links_layout.addWidget(self.btn_recover, 0, Qt.AlignRight)
 
         card_outer.addWidget(links_widget)
+        form_panel_layout.addWidget(auth_card, 0, Qt.AlignCenter)
+        form_panel_layout.addStretch(1)
 
-        shell_layout.addWidget(auth_card, 0, Qt.AlignCenter)
-        root.addWidget(shell, 1, Qt.AlignCenter)
+        root.addWidget(hero_panel, 5)
+        root.addWidget(form_panel, 5)
+
+        self.edit_account.returnPressed.connect(self._emit_login)
+        self.edit_password.returnPressed.connect(self._emit_login)
 
     def _emit_login(self) -> None:
         account = self.edit_account.text().strip()

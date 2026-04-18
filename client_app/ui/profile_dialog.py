@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialog, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import BodyLabel, CaptionLabel, FluentIcon as FIF, InfoBar, LineEdit
 
@@ -8,6 +9,7 @@ from .theme import (
     make_header_block,
     make_labeled_input,
     make_link_action,
+    make_logo_badge,
     make_primary_action,
     make_section_card,
 )
@@ -17,22 +19,28 @@ class ProfileDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("个人资料")
-        self.resize(760, 860)
-        self.setMinimumSize(700, 760)
+        self.resize(660, 760)
+        self.setMinimumSize(620, 700)
         self._build_ui()
         apply_app_style(self)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(16)
+        root.setContentsMargins(26, 24, 26, 24)
+        root.setSpacing(14)
 
-        root.addWidget(
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+        header_layout.addWidget(make_logo_badge(72), 0, Qt.AlignHCenter)
+        header_layout.addWidget(
             make_header_block(
                 "个人资料设置",
-                "可修改昵称、登录密码和密码找回信息。未填写的部分将保持不变。",
+                "",
             )
         )
+        root.addWidget(header)
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -41,18 +49,15 @@ class ProfileDialog(QDialog):
         content = QWidget(scroll)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 6, 0)
-        content_layout.setSpacing(18)
+        content_layout.setSpacing(14)
 
         profile_card = make_section_card()
         profile_layout = QVBoxLayout(profile_card)
         profile_layout.setContentsMargins(22, 22, 22, 22)
-        profile_layout.setSpacing(16)
+        profile_layout.setSpacing(14)
 
         profile_title = BodyLabel(profile_card)
         profile_title.setText("基础资料")
-        profile_hint = CaptionLabel(profile_card)
-        profile_hint.setWordWrap(True)
-        profile_hint.setText("账号为只读展示，昵称修改后会同步更新会话顶部的当前用户信息。")
         self.edit_account = LineEdit(profile_card)
         self.edit_account.setReadOnly(True)
         self.edit_account.setPlaceholderText("当前登录账号")
@@ -72,20 +77,16 @@ class ProfileDialog(QDialog):
         )
 
         profile_layout.addWidget(profile_title)
-        profile_layout.addWidget(profile_hint)
         profile_layout.addWidget(account_row)
         profile_layout.addWidget(nickname_row)
 
         password_card = make_section_card()
         password_layout = QVBoxLayout(password_card)
         password_layout.setContentsMargins(22, 22, 22, 22)
-        password_layout.setSpacing(16)
+        password_layout.setSpacing(14)
 
         password_title = BodyLabel(password_card)
         password_title.setText("密码修改")
-        password_hint = CaptionLabel(password_card)
-        password_hint.setWordWrap(True)
-        password_hint.setText("仅在需要改密时填写；如果留空，客户端不会提交密码修改请求。")
         current_password_row, self.edit_current_password = make_labeled_input(
             "当前密码", "如需改密请输入当前密码", password=True
         )
@@ -97,7 +98,6 @@ class ProfileDialog(QDialog):
         )
 
         password_layout.addWidget(password_title)
-        password_layout.addWidget(password_hint)
         password_layout.addWidget(current_password_row)
         password_layout.addWidget(new_password_row)
         password_layout.addWidget(confirm_password_row)
@@ -105,13 +105,10 @@ class ProfileDialog(QDialog):
         recovery_card = make_section_card()
         recovery_layout = QVBoxLayout(recovery_card)
         recovery_layout.setContentsMargins(22, 22, 22, 22)
-        recovery_layout.setSpacing(16)
+        recovery_layout.setSpacing(14)
 
         recovery_title = BodyLabel(recovery_card)
         recovery_title.setText("找回信息")
-        recovery_hint = CaptionLabel(recovery_card)
-        recovery_hint.setWordWrap(True)
-        recovery_hint.setText("安全问题和答案建议同时更新，便于后续密码找回。")
         recovery_question_row, self.edit_recovery_question = make_labeled_input(
             "安全问题", "例如：你的小学班主任是谁？"
         )
@@ -120,7 +117,6 @@ class ProfileDialog(QDialog):
         )
 
         recovery_layout.addWidget(recovery_title)
-        recovery_layout.addWidget(recovery_hint)
         recovery_layout.addWidget(recovery_question_row)
         recovery_layout.addWidget(recovery_answer_row)
 
@@ -135,6 +131,8 @@ class ProfileDialog(QDialog):
 
         self.btn_save = make_primary_action("保存设置", FIF.SAVE)
         self.btn_cancel = make_link_action("取消")
+        self.btn_save.setFixedHeight(42)
+        self.btn_cancel.setFixedHeight(42)
         self.btn_save.clicked.connect(self._submit)
         self.btn_cancel.clicked.connect(self.reject)
 

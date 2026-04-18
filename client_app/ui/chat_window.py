@@ -540,13 +540,16 @@ class ChatWindow(QMainWindow):
 
         self.label_peer_title = StrongBodyLabel(title_box)
         self.label_peer_title.setText("请选择会话")
+        self.label_peer_title.setStyleSheet(
+            "color:#1F1F1F;font-size:15px;font-weight:600;"
+        )
 
         self.label_peer_subtitle = CaptionLabel(title_box)
-        self.label_peer_subtitle.setStyleSheet("color:#888;")
+        self.label_peer_subtitle.setStyleSheet("color:#888;font-size:11px;")
         self.label_peer_subtitle.setText("暂无会话 · 选择左侧联系人开始聊天")
 
         self.label_peer_status = CaptionLabel(title_box)
-        self.label_peer_status.setStyleSheet("color:#9A9A9A;")
+        self.label_peer_status.setStyleSheet("color:#9A9A9A;font-size:11px;")
         self.label_peer_status.setText("消息、文件与群聊状态会在这里显示")
 
         title_layout.addWidget(self.label_peer_title)
@@ -634,6 +637,7 @@ class ChatWindow(QMainWindow):
         self.edit_message.setMinimumHeight(52)
         self.edit_message.setMaximumHeight(120)
         self.edit_message.setPlaceholderText("输入消息内容...")
+        self.edit_message.setStyleSheet("font-size:13px;line-height:1.6;")
         composer_layout.addWidget(self.edit_message, 1)
 
         bottom_row = QWidget(composer)
@@ -642,11 +646,11 @@ class ChatWindow(QMainWindow):
         bottom_layout.setSpacing(8)
 
         self.label_runtime_status = CaptionLabel(bottom_row)
-        self.label_runtime_status.setStyleSheet("color:#888;")
+        self.label_runtime_status.setStyleSheet("color:#888;font-size:11px;")
         self.label_runtime_status.setText("连接状态：已连接服务器 · 未选择会话")
 
         self.label_download_root = CaptionLabel(bottom_row)
-        self.label_download_root.setStyleSheet("color:#888;")
+        self.label_download_root.setStyleSheet("color:#888;font-size:11px;")
         self.label_download_root.setText("")
 
         bottom_layout.addWidget(self.label_runtime_status)
@@ -658,6 +662,7 @@ class ChatWindow(QMainWindow):
         self.btn_send.setIcon(FIF.SEND)
         self.btn_send.setFixedHeight(32)
         self.btn_send.setMinimumWidth(80)
+        self.btn_send.setStyleSheet("font-size:13px;font-weight:600;")
         self.btn_send.clicked.connect(self._emit_send_message)
         bottom_layout.addWidget(self.btn_send)
 
