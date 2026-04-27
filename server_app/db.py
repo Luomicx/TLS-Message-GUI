@@ -117,7 +117,11 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL,
                     friend_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'accepted',
+                    request_note TEXT NOT NULL DEFAULT '',
+                    decision_note TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
                     UNIQUE(username, friend_id),
                     FOREIGN KEY(friend_id) REFERENCES users(id) ON DELETE CASCADE
                 );
@@ -153,6 +157,20 @@ class Database:
                     FOREIGN KEY(group_id) REFERENCES groups_chat(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS group_join_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id INTEGER NOT NULL,
+                    requester_username TEXT NOT NULL,
+                    target_username TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    request_note TEXT NOT NULL DEFAULT '',
+                    decision_note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(group_id, target_username),
+                    FOREIGN KEY(group_id) REFERENCES groups_chat(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS group_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     group_id INTEGER NOT NULL,
@@ -172,6 +190,9 @@ class Database:
                     file_blob BLOB NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_group_join_requests_target
+                ON group_join_requests(target_username, status, updated_at);
                 """
             )
             self._ensure_schema_compat(conn)
@@ -196,6 +217,56 @@ class Database:
             conn.execute("ALTER TABLE users ADD COLUMN recovery_salt BLOB NULL")
         if "recovery_hash" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN recovery_hash BLOB NULL")
+        friend_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(friends)").fetchall()
+        }
+        if "status" not in friend_columns:
+            conn.execute(
+                "ALTER TABLE friends ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'"
+            )
+        if "updated_at" not in friend_columns:
+            conn.execute(
+                "ALTER TABLE friends ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+            )
+            conn.execute(
+                """
+                UPDATE friends
+                SET updated_at = CASE
+                    WHEN created_at IS NULL OR TRIM(created_at) = '' THEN ?
+                    ELSE created_at
+                END
+                """,
+                (now_text(),),
+            )
+        if "request_note" not in friend_columns:
+            conn.execute(
+                "ALTER TABLE friends ADD COLUMN request_note TEXT NOT NULL DEFAULT ''"
+            )
+        if "decision_note" not in friend_columns:
+            conn.execute(
+                "ALTER TABLE friends ADD COLUMN decision_note TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute("UPDATE friends SET status = 'accepted' WHERE TRIM(status) = ''")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS group_join_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                requester_username TEXT NOT NULL,
+                target_username TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                request_note TEXT NOT NULL DEFAULT '',
+                decision_note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(group_id, target_username),
+                FOREIGN KEY(group_id) REFERENCES groups_chat(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_group_join_requests_target
+            ON group_join_requests(target_username, status, updated_at);
+            """
+        )
 
     def ensure_seed_users(self) -> None:
         """Insert a few demo users when DB is empty (for screenshot-like demo)."""
@@ -644,7 +715,9 @@ class Database:
             cur = conn.execute(sql, tuple(params))
             return [self._user_row_to_dict(row) for row in cur.fetchall()]
 
-    def add_friend(self, username: str, friend_id: int) -> dict[str, Any]:
+    def send_friend_request(
+        self, username: str, friend_id: int, request_note: str = ""
+    ) -> dict[str, Any]:
         owner = self.get_user_by_username(username)
         if owner is None:
             raise ValueError("user_not_found")
@@ -656,22 +729,256 @@ class Database:
             raise ValueError("cannot_add_self")
 
         created_at = now_text()
+        owner_id = int(owner["id"])
+        friend_username = str(friend["username"])
+        clean_request_note = request_note.strip()
         with self.connect() as conn:
-            cur = conn.execute(
-                "SELECT 1 FROM friends WHERE username = ? AND friend_id = ? LIMIT 1",
+            outgoing = conn.execute(
+                """
+                SELECT status
+                FROM friends
+                WHERE username = ? AND friend_id = ?
+                LIMIT 1
+                """,
                 (username, int(friend_id)),
-            )
-            if cur.fetchone() is not None:
+            ).fetchone()
+            incoming = conn.execute(
+                """
+                SELECT status
+                FROM friends
+                WHERE username = ? AND friend_id = ?
+                LIMIT 1
+                """,
+                (friend_username, owner_id),
+            ).fetchone()
+            outgoing_status = str(outgoing["status"]) if outgoing is not None else ""
+            incoming_status = str(incoming["status"]) if incoming is not None else ""
+            if outgoing_status == "accepted" or incoming_status == "accepted":
                 raise ValueError("already_friend")
+            if outgoing_status == "requested" and incoming_status == "pending":
+                raise ValueError("friend_request_already_sent")
+            if outgoing_status == "pending" and incoming_status == "requested":
+                raise ValueError("friend_request_incoming")
             conn.execute(
-                "INSERT INTO friends(username, friend_id, created_at) VALUES(?,?,?)",
-                (username, int(friend_id), created_at),
+                """
+                INSERT INTO friends(
+                    username, friend_id, status, request_note, decision_note, created_at, updated_at
+                )
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(username, friend_id)
+                DO UPDATE SET
+                    status = excluded.status,
+                    request_note = excluded.request_note,
+                    decision_note = excluded.decision_note,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    username,
+                    int(friend_id),
+                    "requested",
+                    clean_request_note,
+                    "",
+                    created_at,
+                    created_at,
+                ),
             )
             conn.execute(
-                "INSERT OR IGNORE INTO friends(username, friend_id, created_at) VALUES(?,?,?)",
-                (friend["username"], int(owner["id"]), created_at),
+                """
+                INSERT INTO friends(
+                    username, friend_id, status, request_note, decision_note, created_at, updated_at
+                )
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(username, friend_id)
+                DO UPDATE SET
+                    status = excluded.status,
+                    request_note = excluded.request_note,
+                    decision_note = excluded.decision_note,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    friend_username,
+                    owner_id,
+                    "pending",
+                    clean_request_note,
+                    "",
+                    created_at,
+                    created_at,
+                ),
             )
         return friend
+
+    def add_friend(
+        self, username: str, friend_id: int, request_note: str = ""
+    ) -> dict[str, Any]:
+        return self.send_friend_request(username, friend_id, request_note)
+
+    def accept_friend_request(self, username: str, friend_id: int) -> dict[str, Any]:
+        owner = self.get_user_by_username(username)
+        if owner is None:
+            raise ValueError("user_not_found")
+        friend_rows = self.search_user_by_id(friend_id)
+        if not friend_rows:
+            raise ValueError("friend_not_found")
+        friend = friend_rows[0]
+        owner_id = int(owner["id"])
+        friend_username = str(friend["username"])
+        updated_at = now_text()
+        with self.connect() as conn:
+            pending = conn.execute(
+                """
+                SELECT status
+                FROM friends
+                WHERE username = ? AND friend_id = ?
+                LIMIT 1
+                """,
+                (username, int(friend_id)),
+            ).fetchone()
+            outgoing = conn.execute(
+                """
+                SELECT status
+                FROM friends
+                WHERE username = ? AND friend_id = ?
+                LIMIT 1
+                """,
+                (friend_username, owner_id),
+            ).fetchone()
+            pending_status = str(pending["status"]) if pending is not None else ""
+            outgoing_status = str(outgoing["status"]) if outgoing is not None else ""
+            if pending_status == "accepted" or outgoing_status == "accepted":
+                raise ValueError("already_friend")
+            if pending_status != "pending":
+                raise ValueError("friend_request_not_found")
+            conn.execute(
+                """
+                UPDATE friends
+                SET status = 'accepted', decision_note = '', updated_at = ?
+                WHERE username = ? AND friend_id = ?
+                """,
+                (updated_at, username, int(friend_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO friends(
+                    username, friend_id, status, request_note, decision_note, created_at, updated_at
+                )
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(username, friend_id)
+                DO UPDATE SET
+                    status = excluded.status,
+                    decision_note = excluded.decision_note,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    friend_username,
+                    owner_id,
+                    "accepted",
+                    "",
+                    "",
+                    updated_at,
+                    updated_at,
+                ),
+            )
+        return friend
+
+    def reject_friend_request(
+        self, username: str, friend_id: int, decision_note: str = ""
+    ) -> dict[str, Any]:
+        owner = self.get_user_by_username(username)
+        if owner is None:
+            raise ValueError("user_not_found")
+        friend_rows = self.search_user_by_id(friend_id)
+        if not friend_rows:
+            raise ValueError("friend_not_found")
+        friend = friend_rows[0]
+        owner_id = int(owner["id"])
+        friend_username = str(friend["username"])
+        updated_at = now_text()
+        clean_decision_note = decision_note.strip()
+        with self.connect() as conn:
+            pending = conn.execute(
+                """
+                SELECT status
+                FROM friends
+                WHERE username = ? AND friend_id = ?
+                LIMIT 1
+                """,
+                (username, int(friend_id)),
+            ).fetchone()
+            outgoing = conn.execute(
+                """
+                SELECT status
+                FROM friends
+                WHERE username = ? AND friend_id = ?
+                LIMIT 1
+                """,
+                (friend_username, owner_id),
+            ).fetchone()
+            pending_status = str(pending["status"]) if pending is not None else ""
+            outgoing_status = str(outgoing["status"]) if outgoing is not None else ""
+            if pending_status == "accepted" or outgoing_status == "accepted":
+                raise ValueError("already_friend")
+            if pending_status != "pending":
+                raise ValueError("friend_request_not_found")
+            conn.execute(
+                """
+                UPDATE friends
+                SET status = 'rejected', decision_note = ?, updated_at = ?
+                WHERE username = ? AND friend_id = ?
+                """,
+                (clean_decision_note, updated_at, username, int(friend_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO friends(
+                    username, friend_id, status, request_note, decision_note, created_at, updated_at
+                )
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(username, friend_id)
+                DO UPDATE SET
+                    status = excluded.status,
+                    decision_note = excluded.decision_note,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    friend_username,
+                    owner_id,
+                    "rejected",
+                    "",
+                    clean_decision_note,
+                    updated_at,
+                    updated_at,
+                ),
+            )
+        return friend
+
+    def list_pending_friend_requests(self, username: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    u.id,
+                    u.username,
+                    u.nickname,
+                    u.avatar,
+                    u.encoding_rule,
+                    u.locked,
+                    u.created_at,
+                    f.request_note AS request_note,
+                    f.updated_at AS request_updated_at
+                FROM friends f
+                JOIN users u ON u.id = f.friend_id
+                WHERE f.username = ? AND f.status = 'pending' AND u.locked = 0
+                ORDER BY f.updated_at ASC, u.username ASC
+                """,
+                (username,),
+            )
+            out: list[dict[str, Any]] = []
+            for row in cur.fetchall():
+                payload = self._user_row_to_dict(row)
+                payload["request_updated_at"] = str(row["request_updated_at"] or "")
+                payload["request_note"] = str(row["request_note"] or "")
+                out.append(payload)
+            return out
 
     def list_friends(self, username: str) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -680,12 +987,26 @@ class Database:
                 SELECT u.id, u.username, u.nickname, u.avatar, u.encoding_rule, u.locked, u.created_at
                 FROM friends f
                 JOIN users u ON u.id = f.friend_id
-                WHERE f.username = ? AND u.locked = 0
+                WHERE f.username = ? AND f.status = 'accepted' AND u.locked = 0
                 ORDER BY u.username ASC
                 """,
                 (username,),
             )
             return [self._user_row_to_dict(row) for row in cur.fetchall()]
+
+    def are_friends(self, username: str, peer_username: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM friends f
+                JOIN users u ON u.id = f.friend_id
+                WHERE f.username = ? AND u.username = ? AND f.status = 'accepted'
+                LIMIT 1
+                """,
+                (username, peer_username),
+            ).fetchone()
+            return row is not None
 
     def save_message(
         self,
@@ -783,7 +1104,11 @@ class Database:
             conn.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
 
     def create_group(
-        self, owner_username: str, group_name: str, members: Iterable[str] = ()
+        self,
+        owner_username: str,
+        group_name: str,
+        members: Iterable[str] = (),
+        invite_note: str = "",
     ) -> dict[str, Any]:
         clean_name = group_name.strip()
         if not clean_name:
@@ -794,6 +1119,8 @@ class Database:
             name = str(item).strip()
             if name:
                 member_set.add(name)
+        invite_targets = sorted(name for name in member_set if name != owner_username)
+        clean_invite_note = invite_note.strip()
         with self.connect() as conn:
             placeholders = ",".join("?" for _ in member_set)
             existing_rows = conn.execute(
@@ -803,6 +1130,11 @@ class Database:
             existing_names = {str(row["username"]) for row in existing_rows}
             if existing_names != member_set:
                 raise ValueError("group_member_not_found")
+            for member_username in sorted(member_set):
+                if member_username == owner_username:
+                    continue
+                if not self.are_friends(owner_username, member_username):
+                    raise ValueError("not_friends")
             cur = conn.execute(
                 """
                 INSERT INTO groups_chat(name, owner_username, created_at)
@@ -811,21 +1143,145 @@ class Database:
                 (clean_name, owner_username, created_at),
             )
             group_id = int(cur.lastrowid)
-            for username in sorted(member_set):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO group_members(group_id, username, created_at)
+                VALUES(?,?,?)
+                """,
+                (group_id, owner_username, created_at),
+            )
+            for username in invite_targets:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO group_members(group_id, username, created_at)
-                    VALUES(?,?,?)
+                    INSERT INTO group_join_requests(
+                        group_id, requester_username, target_username, status,
+                        request_note, decision_note, created_at, updated_at
+                    )
+                    VALUES(?,?,?,?,?,?,?,?)
+                    ON CONFLICT(group_id, target_username)
+                    DO UPDATE SET
+                        status = excluded.status,
+                        request_note = excluded.request_note,
+                        decision_note = excluded.decision_note,
+                        requester_username = excluded.requester_username,
+                        updated_at = excluded.updated_at
                     """,
-                    (group_id, username, created_at),
+                    (
+                        group_id,
+                        owner_username,
+                        username,
+                        "pending",
+                        clean_invite_note,
+                        "",
+                        created_at,
+                        created_at,
+                    ),
                 )
         return {
             "id": group_id,
             "name": clean_name,
             "owner_username": owner_username,
             "created_at": created_at,
-            "members": sorted(member_set),
+            "members": [owner_username],
+            "pending_invites": invite_targets,
         }
+
+    def list_pending_group_requests(self, username: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT
+                    r.id,
+                    r.group_id,
+                    g.name AS group_name,
+                    g.owner_username,
+                    r.requester_username,
+                    r.request_note,
+                    r.updated_at
+                FROM group_join_requests r
+                JOIN groups_chat g ON g.id = r.group_id
+                WHERE r.target_username = ? AND r.status = 'pending'
+                ORDER BY r.updated_at ASC, r.id ASC
+                """,
+                (username,),
+            )
+            return [
+                {
+                    "request_id": int(row["id"]),
+                    "group_id": int(row["group_id"]),
+                    "group_name": str(row["group_name"]),
+                    "owner_username": str(row["owner_username"]),
+                    "requester_username": str(row["requester_username"]),
+                    "request_note": str(row["request_note"] or ""),
+                    "request_updated_at": str(row["updated_at"] or ""),
+                }
+                for row in cur.fetchall()
+            ]
+
+    def process_group_join_request(
+        self, username: str, request_id: int, *, decision: str, decision_note: str = ""
+    ) -> dict[str, Any]:
+        normalized = decision.strip().lower()
+        if normalized not in {"accept", "reject"}:
+            raise ValueError("invalid_request")
+        updated_at = now_text()
+        clean_decision_note = decision_note.strip()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, group_id, target_username, status
+                FROM group_join_requests
+                WHERE id = ? AND target_username = ?
+                LIMIT 1
+                """,
+                (int(request_id), username),
+            ).fetchone()
+            if row is None or str(row["status"]) != "pending":
+                raise ValueError("group_request_not_found")
+            status = "accepted" if normalized == "accept" else "rejected"
+            conn.execute(
+                """
+                UPDATE group_join_requests
+                SET status = ?, decision_note = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, clean_decision_note, updated_at, int(request_id)),
+            )
+            group_id = int(row["group_id"])
+            if status == "accepted":
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO group_members(group_id, username, created_at)
+                    VALUES(?,?,?)
+                    """,
+                    (group_id, username, updated_at),
+                )
+            group_row = conn.execute(
+                """
+                SELECT id, name, owner_username, created_at
+                FROM groups_chat
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (group_id,),
+            ).fetchone()
+            if group_row is None:
+                raise ValueError("group_not_found")
+            members_cur = conn.execute(
+                "SELECT username FROM group_members WHERE group_id = ? ORDER BY username ASC",
+                (group_id,),
+            )
+            return {
+                "request_id": int(request_id),
+                "decision": status,
+                "group": {
+                    "id": int(group_row["id"]),
+                    "name": str(group_row["name"]),
+                    "owner_username": str(group_row["owner_username"]),
+                    "created_at": str(group_row["created_at"]),
+                    "members": [str(x["username"]) for x in members_cur.fetchall()],
+                },
+            }
 
     def list_groups(self, username: str) -> list[dict[str, Any]]:
         with self.connect() as conn:

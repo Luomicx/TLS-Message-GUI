@@ -10,6 +10,19 @@ import time
 from PyQt5.QtCore import QObject, QTimer, Qt
 from PyQt5.QtWidgets import QApplication
 
+try:
+    from PyQt5.QtCore import pyqtSignal
+except ImportError:
+    class _DummySignal:
+        def connect(self, *_args, **_kwargs) -> None:
+            return None
+
+        def emit(self, *_args, **_kwargs) -> None:
+            return None
+
+    def pyqtSignal(*_args, **_kwargs):  # type: ignore[misc]
+        return _DummySignal()
+
 from .network import ClientController
 from .ui import ChatWindow, LoginWindow
 
@@ -20,8 +33,13 @@ ERROR_MESSAGE_MAP = {
     "user_locked": "该账号已被锁定，请联系管理员",
     "user_exists": "该用户名已存在，请更换后重试",
     "already_friend": "对方已经是你的好友，无需重复添加",
+    "friend_request_already_sent": "好友申请已经发出，等对方同意就可以了",
+    "friend_request_incoming": "对方已经向你发来申请，请先在待处理申请里同意",
+    "friend_request_not_found": "这条好友申请已经不存在了",
+    "group_request_not_found": "这条加群申请已经不存在了",
     "friend_not_found": "未找到该好友或会话",
     "cannot_add_self": "不能将自己添加为好友",
+    "not_friends": "你们还不是好友，暂时不能进行这项操作",
     "invalid_request": "请求参数无效，请检查输入后重试",
     "server_error": "服务器内部处理失败，请稍后重试",
     "network_error": "网络连接失败，请检查服务器状态后重试",
@@ -36,7 +54,73 @@ ERROR_MESSAGE_MAP = {
     "group_member_not_found": "群成员不存在，请检查邀请列表",
     "not_group_member": "你不是该群成员",
     "invalid_file": "文件无效或为空",
+    "file_read_error": "读取文件失败，请确认文件仍存在且可访问",
+    "request_busy": "当前还有请求在处理中，请稍后再试",
+    "upload_session_invalid": "文件上传会话已失效，请重新发送",
+    "upload_chunk_invalid": "文件分片数据异常，请重新发送文件",
+    "upload_incomplete": "文件还没传完就结束了，请重新发送",
+    "upload_write_error": "服务端写入文件时失败，请检查磁盘或权限",
+    "file_too_large": "文件过大，当前版本暂不支持发送",
 }
+
+
+class FileUploadWorker(QObject):
+    progress = pyqtSignal(dict)
+    finished = pyqtSignal(dict)
+
+    def __init__(
+        self,
+        *,
+        controller: ClientController,
+        username: str,
+        peer: str,
+        file_path: str,
+    ) -> None:
+        super().__init__()
+        self._controller = controller
+        self._username = username
+        self._peer = peer
+        self._file_path = file_path
+
+    def run(self) -> None:
+        try:
+            path = Path(self._file_path)
+            file_name = path.name
+            file_size = path.stat().st_size
+        except OSError as exc:
+            self.finished.emit(
+                {
+                    "ok": False,
+                    "code": "file_read_error",
+                    "message": f"读取文件失败: {exc}",
+                    "data": {},
+                    "peer": self._peer,
+                    "file_name": Path(self._file_path).name,
+                }
+            )
+            return
+
+        def report_progress(sent_bytes: int, total_bytes: int) -> None:
+            self.progress.emit(
+                {
+                    "peer": self._peer,
+                    "file_name": file_name,
+                    "sent_bytes": int(sent_bytes),
+                    "total_bytes": int(total_bytes),
+                }
+            )
+
+        response = self._controller.send_file_path(
+            self._username,
+            self._peer,
+            self._file_path,
+            progress_callback=report_progress,
+        )
+        payload = dict(response)
+        payload["peer"] = self._peer
+        payload["file_name"] = file_name
+        payload["file_size"] = int(file_size)
+        self.finished.emit(payload)
 
 
 class ClientApplication:
@@ -78,6 +162,9 @@ class ClientApplication:
         self.full_refresh_required = True
         self.idle_refresh_enabled = False
         self._last_presence_refresh_at: float | None = None
+        self._file_upload_in_progress = False
+        self._file_upload_threads: set[object] = set()
+        self._file_upload_workers: dict[object, object] = {}
         self._refresh_timer = QTimer(cast(QObject, self.chat_window))
         self._refresh_timer.setInterval(self.IDLE_REFRESH_INTERVAL_MS)
         self._refresh_timer.timeout.connect(self._on_refresh_timer_tick)
@@ -89,6 +176,12 @@ class ClientApplication:
         self.chat_window.close_requested.connect(self._handle_chat_window_close)
         self.chat_window.search_requested.connect(self.search_users)
         self.chat_window.add_friend_requested.connect(self.add_friend)
+        self.chat_window.process_friend_request_requested.connect(
+            self.process_friend_request
+        )
+        self.chat_window.process_group_request_requested.connect(
+            self.process_group_request
+        )
         self.chat_window.send_message_requested.connect(self.send_message)
         self.chat_window.session_selected.connect(self.load_messages)
         self.chat_window.send_file_requested.connect(self.send_file_from_dialog)
@@ -153,7 +246,11 @@ class ClientApplication:
         self.chat_window.reset_view_state()
         self.chat_window.set_download_root(str(self.download_root))
         self.chat_window.set_current_user(self.current_user)
-        self.chat_window.populate_friends(list(data.get("friends") or []))
+        self._apply_friend_views(
+            friends=list(data.get("friends") or []),
+            pending_requests=list(data.get("pending_requests") or []),
+            pending_group_requests=list(data.get("pending_group_requests") or []),
+        )
         self._replace_session_catalog(list(data.get("sessions") or []))
         self.chat_window.populate_sessions(self._session_view_payloads())
         groups = self._load_groups_into_sessions()
@@ -364,6 +461,17 @@ class ClientApplication:
         for friend in friends:
             self._upsert_session_record(friend)
 
+    def _apply_friend_views(
+        self,
+        *,
+        friends: list[dict[str, object]],
+        pending_requests: list[dict[str, object]],
+        pending_group_requests: list[dict[str, object]],
+    ) -> None:
+        self.chat_window.populate_friends(friends)
+        self.chat_window.populate_pending_requests(pending_requests)
+        self.chat_window.populate_pending_group_requests(pending_group_requests)
+
     def _group_session_key(self, group_id: int, group_name: str) -> str:
         return f"[群]{group_name}#{group_id}"
 
@@ -421,11 +529,15 @@ class ClientApplication:
             ok=bool(response.get("ok", False)),
         )
 
-    def create_group(self, group_name: str, members: list[str]) -> dict:
+    def create_group(
+        self, group_name: str, members: list[str], invite_note: str = ""
+    ) -> dict:
         if not self.current_user:
             return {"ok": False, "code": "invalid_request", "message": "未登录"}
         username = str(self.current_user.get("username", "")).strip()
-        return self.client_controller.create_group(username, group_name, members)
+        return self.client_controller.create_group(
+            username, group_name, members, invite_note=invite_note
+        )
 
     def send_file(self, peer: str, file_name: str, file_bytes: bytes) -> dict:
         if not self.current_user:
@@ -451,22 +563,98 @@ class ClientApplication:
                 self._resolve_user_message(response, default_message="搜索失败")
             )
 
-    def add_friend(self, friend_id: int) -> None:
+    def add_friend(self, friend_id: int, request_note: str = "") -> None:
         if not self.current_user:
             return
         response = self.client_controller.add_friend(
-            str(self.current_user.get("username", "")), friend_id
+            str(self.current_user.get("username", "")),
+            friend_id,
+            request_note=request_note,
         )
         if response.get("ok", False):
             friends = list(response.get("data", {}).get("friends") or [])
-            self.chat_window.populate_friends(friends)
+            pending_requests = list(
+                response.get("data", {}).get("pending_requests") or []
+            )
+            pending_group_requests = list(
+                response.get("data", {}).get("pending_group_requests") or []
+            )
+            self._apply_friend_views(
+                friends=friends,
+                pending_requests=pending_requests,
+                pending_group_requests=pending_group_requests,
+            )
+            self._reset_refresh_backoff()
+        self.chat_window.show_notice(
+            self._resolve_user_message(response, default_message="添加好友完成")
+        )
+
+    def process_friend_request(
+        self, friend_id: int, decision: str, decision_note: str = ""
+    ) -> None:
+        if not self.current_user:
+            return
+        username = str(self.current_user.get("username", ""))
+        if decision == "accept":
+            response = self.client_controller.accept_friend_request(username, friend_id)
+        else:
+            response = self.client_controller.reject_friend_request(
+                username, friend_id, decision_note=decision_note
+            )
+        if response.get("ok", False):
+            friends = list(response.get("data", {}).get("friends") or [])
+            pending_requests = list(
+                response.get("data", {}).get("pending_requests") or []
+            )
+            pending_group_requests = list(
+                response.get("data", {}).get("pending_group_requests") or []
+            )
+            self._apply_friend_views(
+                friends=friends,
+                pending_requests=pending_requests,
+                pending_group_requests=pending_group_requests,
+            )
             self._sync_friend_sessions(friends)
             friend = dict(response.get("data", {}).get("friend") or {})
             if friend:
                 self._upsert_session_record(friend)
             self._reset_refresh_backoff()
         self.chat_window.show_notice(
-            self._resolve_user_message(response, default_message="添加好友完成")
+            self._resolve_user_message(response, default_message="处理好友申请完成")
+        )
+
+    def process_group_request(
+        self, request_id: int, decision: str, decision_note: str = ""
+    ) -> None:
+        if not self.current_user:
+            return
+        username = str(self.current_user.get("username", ""))
+        response = self.client_controller.process_group_join_request(
+            username,
+            request_id,
+            decision=decision,
+            decision_note=decision_note,
+        )
+        if response.get("ok", False):
+            groups = list(response.get("data", {}).get("groups") or [])
+            self._sync_group_sessions(groups)
+            friend_response = self.client_controller.list_friends(username)
+            if friend_response.get("ok", False):
+                friends = list(friend_response.get("data", {}).get("friends") or [])
+                pending_requests = list(
+                    friend_response.get("data", {}).get("pending_requests") or []
+                )
+                pending_group_requests = list(
+                    response.get("data", {}).get("pending_group_requests") or []
+                )
+                self._apply_friend_views(
+                    friends=friends,
+                    pending_requests=pending_requests,
+                    pending_group_requests=pending_group_requests,
+                )
+            self._reset_refresh_backoff()
+        self.chat_window.show_notice(
+            self._resolve_user_message(response, default_message="处理加群申请完成")
         )
 
     def send_message(self, peer: str, text: str) -> None:
@@ -504,6 +692,9 @@ class ClientApplication:
         if peer.startswith("[群]"):
             self.chat_window.show_notice("当前版本暂不支持群聊发送文件")
             return
+        if self._file_upload_in_progress:
+            self.chat_window.show_notice("当前已有文件在发送，请稍后再试")
+            return
         from PyQt5.QtWidgets import QFileDialog
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -511,19 +702,82 @@ class ClientApplication:
         )
         if not file_path:
             return
-        try:
-            with open(file_path, "rb") as f:
-                file_bytes = f.read()
-        except OSError as exc:
-            self.chat_window.show_notice(f"读取文件失败: {exc}")
+        username = str(self.current_user.get("username", "")).strip()
+        if not username:
+            self.chat_window.show_notice("未登录，无法发送文件")
             return
-        file_name = file_path.replace("\\", "/").split("/")[-1]
-        response = self.send_file(peer, file_name, file_bytes)
-        message = self._resolve_user_message(response, default_message="文件发送完成")
-        if response.get("ok", False):
+        request_generation = self.refresh_generation
+        request_user_key = self.active_user_key
+        if not request_user_key:
+            self.chat_window.show_notice("当前会话已失效，请重新登录")
+            return
+
+        worker = FileUploadWorker(
+            controller=self.client_controller,
+            username=username,
+            peer=peer,
+            file_path=file_path,
+        )
+        from PyQt5.QtCore import QThread
+
+        thread = QThread(cast(QObject, self.chat_window))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(
+            lambda payload, th=thread: self._on_file_upload_finished(
+                payload=payload,
+                thread=th,
+                request_user_key=request_user_key,
+                request_generation=request_generation,
+            )
+        )
+        worker.progress.connect(self._on_file_upload_progress)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._file_upload_threads.add(thread)
+        self._file_upload_workers[thread] = worker
+        self._file_upload_in_progress = True
+        self.chat_window.begin_file_upload(peer=peer, file_name=Path(file_path).name)
+        self.chat_window.show_notice("正在后台发送文件，期间可继续操作界面")
+        thread.start()
+
+    def _on_file_upload_progress(self, payload: dict) -> None:
+        if self._shutting_down or not self.current_user:
+            return
+        self.chat_window.update_file_upload_progress(
+            file_name=str(payload.get("file_name") or "文件"),
+            sent_bytes=self._safe_int(payload.get("sent_bytes")),
+            total_bytes=self._safe_int(payload.get("total_bytes")),
+        )
+
+    def _on_file_upload_finished(
+        self,
+        *,
+        payload: dict,
+        thread: object,
+        request_user_key: str,
+        request_generation: int,
+    ) -> None:
+        self._file_upload_in_progress = False
+        self._file_upload_threads.discard(thread)
+        self._file_upload_workers.pop(thread, None)
+        self.chat_window.finish_file_upload()
+        if (
+            self._shutting_down
+            or self.current_user is None
+            or request_generation != self.refresh_generation
+            or request_user_key != self.active_user_key
+        ):
+            return
+
+        peer = str(payload.get("peer") or "")
+        file_name = str(payload.get("file_name") or "文件")
+        message = self._resolve_user_message(payload, default_message="文件发送完成")
+        if payload.get("ok", False):
             message = f"{message}，文件 {file_name} 已发往 {peer}"
         self.chat_window.show_notice(message)
-        if response.get("ok", False):
+        if payload.get("ok", False) and peer:
             self._refresh_messages(peer, reason="send_success")
 
     def create_group_from_dialog(self) -> None:
@@ -570,6 +824,10 @@ class ClientApplication:
         hint.setWordWrap(True)
         root.addWidget(hint)
 
+        invite_note_edit = QLineEdit(dialog)
+        invite_note_edit.setPlaceholderText("申请理由（可选）")
+        root.addWidget(invite_note_edit)
+
         buttons = QHBoxLayout()
         btn_confirm = QPushButton("创建", dialog)
         btn_cancel = QPushButton("取消", dialog)
@@ -588,7 +846,11 @@ class ClientApplication:
             for index in range(list_widget.count())
             if list_widget.item(index).isSelected()
         ]
-        response = self.create_group(group_name.strip(), members)
+        response = self.create_group(
+            group_name.strip(),
+            members,
+            invite_note=invite_note_edit.text().strip(),
+        )
         self.chat_window.show_notice(
             self._resolve_user_message(response, default_message="创建群聊完成")
         )
@@ -1026,6 +1288,8 @@ class ClientApplication:
         return f"{size / (1024 * 1024):.1f} MB"
 
     def _on_refresh_timer_tick(self) -> None:
+        if self._file_upload_in_progress:
+            return
         if not self._can_run_idle_refresh():
             return
         now = time.monotonic()
@@ -1072,7 +1336,15 @@ class ClientApplication:
             return
         self._apply_refresh_success()
         friends = list(response.get("data", {}).get("friends") or [])
-        self.chat_window.populate_friends(friends)
+        pending_requests = list(response.get("data", {}).get("pending_requests") or [])
+        pending_group_requests = list(
+            response.get("data", {}).get("pending_group_requests") or []
+        )
+        self._apply_friend_views(
+            friends=friends,
+            pending_requests=pending_requests,
+            pending_group_requests=pending_group_requests,
+        )
         self._sync_friend_sessions(friends)
         groups = list(group_response.get("data", {}).get("groups") or [])
         self._sync_group_sessions(groups)

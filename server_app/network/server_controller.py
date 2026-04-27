@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import base64
+import os
 import socket
 import socketserver
 import ssl
 import sqlite3
+import tempfile
 import threading
+import uuid
+from pathlib import Path
 from typing import Any, Optional, Type
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -117,6 +121,7 @@ class ServerController(QObject):
             def setup(self) -> None:
                 super().setup()
                 self.current_user: str | None = None
+                self._file_upload: dict[str, Any] | None = None
 
             def handle(self) -> None:
                 while True:
@@ -152,9 +157,197 @@ class ServerController(QObject):
                         self.wfile.flush()
 
             def finish(self) -> None:
+                self._cleanup_file_upload()
                 if self.current_user:
                     controller._set_online(self.current_user, False, self)
                 super().finish()
+
+            def _cleanup_file_upload(self) -> None:
+                upload = self._file_upload
+                self._file_upload = None
+                if not upload:
+                    return
+                temp_path = Path(str(upload.get("temp_path") or ""))
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
+
+            def _start_file_upload(
+                self,
+                *,
+                sender: str,
+                receiver: str,
+                file_name: str,
+                file_size: int,
+            ) -> bytes:
+                if not controller.db.are_friends(sender, receiver):
+                    return encode_response_line(
+                        ok=False,
+                        code="not_friends",
+                        message="对方还不是你的好友，暂时不能发送文件",
+                    )
+                if not file_name.strip() or file_size <= 0:
+                    return encode_response_line(
+                        ok=False,
+                        code="invalid_file",
+                        message="文件无效或为空",
+                    )
+                self._cleanup_file_upload()
+                fd, temp_name = tempfile.mkstemp(prefix="chat-upload-", suffix=".part")
+                temp_path = Path(temp_name)
+                upload_id = uuid.uuid4().hex
+                self._file_upload = {
+                    "upload_id": upload_id,
+                    "sender": sender,
+                    "receiver": receiver,
+                    "file_name": file_name.strip(),
+                    "file_size": int(file_size),
+                    "received_size": 0,
+                    "chunk_index": 0,
+                    "temp_path": str(temp_path),
+                }
+                os.close(fd)
+                return encode_response_line(
+                    ok=True,
+                    code="ok",
+                    message="文件上传已开始",
+                    data={"upload_id": upload_id},
+                )
+
+            def _append_file_chunk(
+                self,
+                *,
+                sender: str,
+                upload_id: str,
+                chunk_index: int,
+                chunk_size: int,
+                chunk_base64: str,
+            ) -> bytes:
+                upload = self._file_upload
+                if not upload or str(upload.get("upload_id")) != upload_id:
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_session_invalid",
+                        message="文件上传会话已失效",
+                    )
+                if str(upload.get("sender")) != sender:
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_session_invalid",
+                        message="文件上传会话与当前用户不匹配",
+                    )
+                if int(upload.get("chunk_index") or 0) != int(chunk_index):
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_chunk_invalid",
+                        message="文件分片顺序异常",
+                    )
+                try:
+                    chunk = base64.b64decode(chunk_base64.encode("ascii"))
+                except Exception:
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_chunk_invalid",
+                        message="文件分片解码失败",
+                    )
+                if len(chunk) != int(chunk_size):
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_chunk_invalid",
+                        message="文件分片大小不匹配",
+                    )
+                next_size = int(upload.get("received_size") or 0) + len(chunk)
+                if next_size > int(upload.get("file_size") or 0):
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_chunk_invalid",
+                        message="文件分片总大小超过声明值",
+                    )
+                try:
+                    with Path(str(upload.get("temp_path"))).open("ab") as file_handle:
+                        file_handle.write(chunk)
+                except OSError:
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_write_error",
+                        message="服务端写入文件失败",
+                    )
+                upload["received_size"] = next_size
+                upload["chunk_index"] = int(chunk_index) + 1
+                return encode_response_line(
+                    ok=True,
+                    code="ok",
+                    message="文件分片接收成功",
+                    data={"received_size": next_size},
+                )
+
+            def _finish_file_upload(self, *, sender: str, upload_id: str) -> bytes:
+                upload = self._file_upload
+                if not upload or str(upload.get("upload_id")) != upload_id:
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_session_invalid",
+                        message="文件上传会话已失效",
+                    )
+                if str(upload.get("sender")) != sender:
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_session_invalid",
+                        message="文件上传会话与当前用户不匹配",
+                    )
+                if int(upload.get("received_size") or 0) != int(upload.get("file_size") or 0):
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="upload_incomplete",
+                        message="文件尚未完整上传",
+                    )
+                temp_path = Path(str(upload.get("temp_path") or ""))
+                try:
+                    file_bytes = temp_path.read_bytes()
+                    item = controller.db.send_file(
+                        sender=str(upload.get("sender") or ""),
+                        receiver=str(upload.get("receiver") or ""),
+                        file_name=str(upload.get("file_name") or ""),
+                        file_bytes=file_bytes,
+                    )
+                except Exception:
+                    self._cleanup_file_upload()
+                    return encode_response_line(
+                        ok=False,
+                        code="invalid_file",
+                        message="文件发送失败",
+                    )
+                self._cleanup_file_upload()
+                return encode_response_line(
+                    ok=True,
+                    code="ok",
+                    message="文件发送成功",
+                    data={"file": item},
+                )
+
+            def _cancel_file_upload(self, *, sender: str, upload_id: str) -> bytes:
+                upload = self._file_upload
+                if (
+                    upload
+                    and str(upload.get("upload_id")) == upload_id
+                    and str(upload.get("sender")) == sender
+                ):
+                    self._cleanup_file_upload()
+                return encode_response_line(
+                    ok=True,
+                    code="ok",
+                    message="文件上传已取消",
+                )
 
             def _handle_legacy(self, raw: bytes) -> bytes:
                 text = raw.decode("utf-8", errors="ignore").strip()
@@ -232,6 +425,12 @@ class ServerController(QObject):
                                 "user": controller._with_presence(result.user),
                                 "friends": controller._with_presence_list(
                                     controller.db.list_friends(username)
+                                ),
+                                "pending_requests": controller._with_presence_list(
+                                    controller.db.list_pending_friend_requests(username)
+                                ),
+                                "pending_group_requests": controller.db.list_pending_group_requests(
+                                    username
                                 ),
                                 "sessions": controller._with_presence_list(
                                     controller.db.list_sessions(username)
@@ -317,6 +516,13 @@ class ServerController(QObject):
                         users = controller.db.search_users_fuzzy(
                             query, exclude_username=username or None
                         )
+                    users = [
+                        item
+                        for item in users
+                        if not controller.db.are_friends(
+                            username, str(item.get("username", ""))
+                        )
+                    ]
                     return encode_response_line(
                         ok=True,
                         code="ok",
@@ -330,8 +536,11 @@ class ServerController(QObject):
                     if auth_error is not None:
                         return auth_error
                     friend_id = request.get("friend_id")
+                    request_note = str(request.get("request_note", "") or "")
                     try:
-                        friend = controller.db.add_friend(username, int(friend_id))
+                        friend = controller.db.send_friend_request(
+                            username, int(friend_id), request_note=request_note
+                        )
                     except ValueError as exc:
                         code = str(exc)
                         message_map = {
@@ -339,6 +548,8 @@ class ServerController(QObject):
                             "friend_not_found": "目标用户不存在",
                             "already_friend": "已经是好友",
                             "cannot_add_self": "不能添加自己为好友",
+                            "friend_request_already_sent": "好友申请已发送，请等待对方同意",
+                            "friend_request_incoming": "对方向你发过申请，请到待处理申请里同意",
                         }
                         return encode_response_line(
                             ok=False,
@@ -348,11 +559,17 @@ class ServerController(QObject):
                     return encode_response_line(
                         ok=True,
                         code="ok",
-                        message="添加好友成功",
+                        message="好友申请已发送，等待对方同意",
                         data={
                             "friend": controller._with_presence(friend),
                             "friends": controller._with_presence_list(
                                 controller.db.list_friends(username)
+                            ),
+                            "pending_requests": controller._with_presence_list(
+                                controller.db.list_pending_friend_requests(username)
+                            ),
+                            "pending_group_requests": controller.db.list_pending_group_requests(
+                                username
                             ),
                         },
                     )
@@ -369,7 +586,98 @@ class ServerController(QObject):
                         data={
                             "friends": controller._with_presence_list(
                                 controller.db.list_friends(username)
-                            )
+                            ),
+                            "pending_requests": controller._with_presence_list(
+                                controller.db.list_pending_friend_requests(username)
+                            ),
+                            "pending_group_requests": controller.db.list_pending_group_requests(
+                                username
+                            ),
+                        },
+                    )
+
+                if action == "accept_friend_request":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    friend_id = request.get("friend_id")
+                    try:
+                        friend = controller.db.accept_friend_request(
+                            username, int(friend_id)
+                        )
+                    except ValueError as exc:
+                        code = str(exc)
+                        message_map = {
+                            "user_not_found": "用户不存在",
+                            "friend_not_found": "目标用户不存在",
+                            "already_friend": "已经是好友",
+                            "friend_request_not_found": "未找到待处理的好友申请",
+                        }
+                        return encode_response_line(
+                            ok=False,
+                            code=code,
+                            message=message_map.get(code, "同意好友申请失败"),
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="已同意好友申请",
+                        data={
+                            "friend": controller._with_presence(friend),
+                            "friends": controller._with_presence_list(
+                                controller.db.list_friends(username)
+                            ),
+                            "pending_requests": controller._with_presence_list(
+                                controller.db.list_pending_friend_requests(username)
+                            ),
+                            "pending_group_requests": controller.db.list_pending_group_requests(
+                                username
+                            ),
+                        },
+                    )
+
+                if action == "reject_friend_request":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    friend_id = request.get("friend_id")
+                    decision_note = str(request.get("decision_note", "") or "")
+                    try:
+                        friend = controller.db.reject_friend_request(
+                            username,
+                            int(friend_id),
+                            decision_note=decision_note,
+                        )
+                    except ValueError as exc:
+                        code = str(exc)
+                        message_map = {
+                            "user_not_found": "用户不存在",
+                            "friend_not_found": "目标用户不存在",
+                            "already_friend": "已经是好友",
+                            "friend_request_not_found": "未找到待处理的好友申请",
+                        }
+                        return encode_response_line(
+                            ok=False,
+                            code=code,
+                            message=message_map.get(code, "拒绝好友申请失败"),
+                        )
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message="已拒绝好友申请",
+                        data={
+                            "friend": controller._with_presence(friend),
+                            "friends": controller._with_presence_list(
+                                controller.db.list_friends(username)
+                            ),
+                            "pending_requests": controller._with_presence_list(
+                                controller.db.list_pending_friend_requests(username)
+                            ),
+                            "pending_group_requests": controller.db.list_pending_group_requests(
+                                username
+                            ),
                         },
                     )
 
@@ -381,6 +689,12 @@ class ServerController(QObject):
                     receiver = str(request.get("to", "")).strip()
                     content = str(request.get("content", ""))
                     encoding_rule = request.get("encoding_rule") or []
+                    if not controller.db.are_friends(sender, receiver):
+                        return encode_response_line(
+                            ok=False,
+                            code="not_friends",
+                            message="对方还不是你的好友，暂时不能发送消息",
+                        )
                     try:
                         encoded_content = (
                             encode_sensitive_text(content, list(encoding_rule))
@@ -612,8 +926,14 @@ class ServerController(QObject):
                         return auth_error
                     group_name = str(request.get("group_name", "")).strip()
                     members = list(request.get("members") or [])
+                    invite_note = str(request.get("invite_note", "") or "")
                     try:
-                        group = controller.db.create_group(owner, group_name, members)
+                        group = controller.db.create_group(
+                            owner,
+                            group_name,
+                            members,
+                            invite_note=invite_note,
+                        )
                     except ValueError as exc:
                         return encode_response_line(
                             ok=False,
@@ -625,6 +945,51 @@ class ServerController(QObject):
                         code="ok",
                         message="创建群聊成功",
                         data={"group": group},
+                    )
+
+                if action == "process_group_join_request":
+                    username = str(request.get("username", "")).strip()
+                    auth_error = self._require_authenticated_user(username)
+                    if auth_error is not None:
+                        return auth_error
+                    request_id = int(request.get("request_id", 0) or 0)
+                    decision = str(request.get("decision", "") or "")
+                    decision_note = str(request.get("decision_note", "") or "")
+                    try:
+                        result = controller.db.process_group_join_request(
+                            username,
+                            request_id,
+                            decision=decision,
+                            decision_note=decision_note,
+                        )
+                    except ValueError as exc:
+                        code = str(exc) or "invalid_request"
+                        message_map = {
+                            "group_request_not_found": "未找到待处理的加群申请",
+                            "group_not_found": "群聊不存在",
+                            "invalid_request": "请求参数无效",
+                        }
+                        return encode_response_line(
+                            ok=False,
+                            code=code,
+                            message=message_map.get(code, "处理加群申请失败"),
+                        )
+                    decision_text = str(result.get("decision", ""))
+                    return encode_response_line(
+                        ok=True,
+                        code="ok",
+                        message=(
+                            "已同意加群申请"
+                            if decision_text == "accepted"
+                            else "已拒绝加群申请"
+                        ),
+                        data={
+                            "result": result,
+                            "groups": controller.db.list_groups(username),
+                            "pending_group_requests": controller.db.list_pending_group_requests(
+                                username
+                            ),
+                        },
                     )
 
                 if action == "list_groups":
@@ -716,6 +1081,12 @@ class ServerController(QObject):
                     receiver = str(request.get("receiver", "")).strip()
                     file_name = str(request.get("file_name", "")).strip()
                     file_base64 = str(request.get("file_base64", "")).strip()
+                    if not controller.db.are_friends(sender, receiver):
+                        return encode_response_line(
+                            ok=False,
+                            code="not_friends",
+                            message="对方还不是你的好友，暂时不能发送文件",
+                        )
                     try:
                         file_bytes = base64.b64decode(file_base64.encode("ascii"))
                         item = controller.db.send_file(
@@ -735,6 +1106,54 @@ class ServerController(QObject):
                         code="ok",
                         message="文件发送成功",
                         data={"file": item},
+                    )
+
+                if action == "start_file_upload":
+                    sender = str(request.get("sender", "")).strip()
+                    auth_error = self._require_authenticated_user(sender)
+                    if auth_error is not None:
+                        return auth_error
+                    receiver = str(request.get("receiver", "")).strip()
+                    file_name = str(request.get("file_name", "")).strip()
+                    file_size = int(request.get("file_size", 0) or 0)
+                    return self._start_file_upload(
+                        sender=sender,
+                        receiver=receiver,
+                        file_name=file_name,
+                        file_size=file_size,
+                    )
+
+                if action == "upload_file_chunk":
+                    sender = str(request.get("sender", "")).strip()
+                    auth_error = self._require_authenticated_user(sender)
+                    if auth_error is not None:
+                        return auth_error
+                    return self._append_file_chunk(
+                        sender=sender,
+                        upload_id=str(request.get("upload_id", "")).strip(),
+                        chunk_index=int(request.get("chunk_index", 0) or 0),
+                        chunk_size=int(request.get("chunk_size", 0) or 0),
+                        chunk_base64=str(request.get("chunk_base64", "")).strip(),
+                    )
+
+                if action == "finish_file_upload":
+                    sender = str(request.get("sender", "")).strip()
+                    auth_error = self._require_authenticated_user(sender)
+                    if auth_error is not None:
+                        return auth_error
+                    return self._finish_file_upload(
+                        sender=sender,
+                        upload_id=str(request.get("upload_id", "")).strip(),
+                    )
+
+                if action == "cancel_file_upload":
+                    sender = str(request.get("sender", "")).strip()
+                    auth_error = self._require_authenticated_user(sender)
+                    if auth_error is not None:
+                        return auth_error
+                    return self._cancel_file_upload(
+                        sender=sender,
+                        upload_id=str(request.get("upload_id", "")).strip(),
                     )
 
                 if action == "pull_files":

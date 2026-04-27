@@ -153,6 +153,17 @@ class ClientAppMessageMappingTest(unittest.TestCase):
         )
         self.assertEqual(message, "对方已经是你的好友，无需重复添加")
 
+    def test_add_friend_pending_request_maps_to_clear_message(self) -> None:
+        message = self.app._resolve_user_message(
+            {
+                "ok": False,
+                "code": "friend_request_already_sent",
+                "message": "pending",
+            },
+            default_message="添加好友完成",
+        )
+        self.assertEqual(message, "好友申请已经发出，等对方同意就可以了")
+
     def test_send_message_network_error_maps_to_clear_message(self) -> None:
         message = self.app._resolve_user_message(
             {
@@ -170,6 +181,13 @@ class ClientAppMessageMappingTest(unittest.TestCase):
             default_message="消息加载失败",
         )
         self.assertEqual(message, "未找到该好友或会话")
+
+    def test_not_friends_maps_to_clear_message(self) -> None:
+        message = self.app._resolve_user_message(
+            {"ok": False, "code": "not_friends", "message": "not friends"},
+            default_message="消息发送失败",
+        )
+        self.assertEqual(message, "你们还不是好友，暂时不能进行这项操作")
 
     def test_force_logout_maps_to_clear_message(self) -> None:
         message = self.app._resolve_user_message(

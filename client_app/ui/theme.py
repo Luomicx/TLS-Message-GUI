@@ -391,17 +391,19 @@ def _window_stylesheet() -> str:
     }
 
     /* 中间面板列表项 hover */
-    QListWidget#sessionList, QListWidget#friendList, QListWidget#searchResultList {
+    QListWidget#sessionList, QListWidget#pendingRequestList, QListWidget#friendList, QListWidget#searchResultList {
         background: #E7E7E7;
         border: none;
         outline: none;
     }
     QListWidget#sessionList::item:hover,
+    QListWidget#pendingRequestList::item:hover,
     QListWidget#friendList::item:hover,
     QListWidget#searchResultList::item:hover {
         background: #D9D9D9;
     }
     QListWidget#sessionList::item:selected,
+    QListWidget#pendingRequestList::item:selected,
     QListWidget#friendList::item:selected,
     QListWidget#searchResultList::item:selected {
         background: #C9C9C9;

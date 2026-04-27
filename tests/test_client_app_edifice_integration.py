@@ -61,10 +61,16 @@ class ClientAppEdificeMVPIntegrationTest(unittest.TestCase):
         assert carol is not None
         bob_id = bob.get("id")
         carol_id = carol.get("id")
+        alice = self.db.get_user_by_username("alice")
         assert isinstance(bob_id, int)
         assert isinstance(carol_id, int)
-        _ = self.db.add_friend("alice", bob_id)
-        _ = self.db.add_friend("alice", carol_id)
+        assert alice is not None
+        alice_id = alice.get("id")
+        assert isinstance(alice_id, int)
+        _ = self.db.send_friend_request("alice", bob_id)
+        _ = self.db.accept_friend_request("bob", alice_id)
+        _ = self.db.send_friend_request("alice", carol_id)
+        _ = self.db.accept_friend_request("carol", alice_id)
 
         _ = self.db.save_message(
             sender="carol",

@@ -3,11 +3,14 @@ from __future__ import annotations
 from PyQt5.QtCore import QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QGuiApplication
 from PyQt5.QtWidgets import (
+    QDialog,
+    QInputDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QListWidgetItem,
     QMainWindow,
+    QProgressBar,
     QScrollArea,
     QStackedWidget,
     QVBoxLayout,
@@ -31,6 +34,7 @@ from .theme import (
     apply_app_style,
     make_avatar_placeholder,
     make_nav_button,
+    make_section_card,
 )
 
 
@@ -282,6 +286,123 @@ class SessionItemWidget(QWidget):
         self.setMaximumHeight(52)
 
 
+class RequestDecisionDialog(QDialog):
+    def __init__(self, payload: dict[str, str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._payload = payload
+        self._decision: str | None = None
+        self.setWindowTitle("处理申请")
+        self.resize(480, 360)
+        self.setMinimumWidth(440)
+        self._build_ui()
+        apply_app_style(self)
+
+    @property
+    def decision(self) -> str | None:
+        return self._decision
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 18)
+        root.setSpacing(14)
+
+        title = StrongBodyLabel(self)
+        request_type_label = (
+            "好友申请" if self._payload.get("request_type") == "friend" else "加群申请"
+        )
+        title.setText(f"处理{request_type_label}")
+        root.addWidget(title)
+
+        subtitle = CaptionLabel(self)
+        subtitle.setText("请先确认申请详情，再选择同意或拒绝。")
+        subtitle.setStyleSheet("color:#888;")
+        root.addWidget(subtitle)
+
+        details_card = make_section_card()
+        details_layout = QVBoxLayout(details_card)
+        details_layout.setContentsMargins(18, 14, 18, 14)
+        details_layout.setSpacing(9)
+
+        details_layout.addWidget(
+            self._build_detail_row("申请人", self._payload.get("applicant") or "未知用户")
+        )
+        details_layout.addWidget(
+            self._build_detail_row(
+                "账号",
+                self._payload.get("account") or self._payload.get("applicant") or "未提供",
+            )
+        )
+
+        group_name = str(self._payload.get("group_name") or "").strip()
+        if group_name:
+            group_id = str(self._payload.get("group_id") or "").strip()
+            group_text = f"{group_name}#{group_id}" if group_id else group_name
+            details_layout.addWidget(self._build_detail_row("群聊", group_text))
+
+        details_layout.addWidget(
+            self._build_detail_row(
+                "申请时间", self._payload.get("updated_at") or "未记录时间"
+            )
+        )
+        details_layout.addWidget(
+            self._build_detail_row(
+                "申请理由", self._payload.get("request_note") or "（未填写）"
+            )
+        )
+        root.addWidget(details_card)
+
+        button_row = QWidget(self)
+        button_layout = QHBoxLayout(button_row)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(10)
+
+        btn_accept = PrimaryPushButton(button_row)
+        btn_accept.setText("同意")
+        btn_accept.clicked.connect(self._accept_request)
+
+        btn_reject = PushButton(button_row)
+        btn_reject.setText("拒绝")
+        btn_reject.clicked.connect(self._reject_request)
+
+        btn_cancel = PushButton(button_row)
+        btn_cancel.setText("取消")
+        btn_cancel.clicked.connect(self.reject)
+
+        button_layout.addWidget(btn_accept, 1)
+        button_layout.addWidget(btn_reject, 1)
+        button_layout.addWidget(btn_cancel, 1)
+        root.addWidget(button_row)
+
+    def _build_detail_row(self, title: str, value: str) -> QWidget:
+        row = QWidget(self)
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        title_label = CaptionLabel(row)
+        title_label.setText(title)
+        title_label.setStyleSheet("color:#888;")
+
+        value_label = QLabel(value, row)
+        value_label.setWordWrap(True)
+        value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        value_label.setStyleSheet(
+            "color:#1F1F1F;font-size:13px;line-height:1.5;background:transparent;"
+        )
+
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        return row
+
+    def _accept_request(self) -> None:
+        self._decision = "accept"
+        self.accept()
+
+    def _reject_request(self) -> None:
+        self._decision = "reject"
+        self.accept()
+
+
 class ChatWindow(QMainWindow):
     DEFAULT_WIDTH = 1280
     DEFAULT_HEIGHT = 820
@@ -295,7 +416,9 @@ class ChatWindow(QMainWindow):
     close_requested = pyqtSignal()
     profile_requested = pyqtSignal()
     search_requested = pyqtSignal(str, str)
-    add_friend_requested = pyqtSignal(int)
+    add_friend_requested = pyqtSignal(int, str)
+    process_friend_request_requested = pyqtSignal(int, str, str)
+    process_group_request_requested = pyqtSignal(int, str, str)
     send_message_requested = pyqtSignal(str, str)
     session_selected = pyqtSignal(str)
     send_file_requested = pyqtSignal(str)
@@ -309,6 +432,7 @@ class ChatWindow(QMainWindow):
 
         self.current_peer: str | None = None
         self._session_payloads: dict[str, dict[str, object]] = {}
+        self._friend_usernames: set[str] = set()
         self._search_mode = "fuzzy"
         self._nav_buttons: list[ToolButton] = []
         self._current_user_nickname = "当前用户"
@@ -454,7 +578,27 @@ class ChatWindow(QMainWindow):
         friend_page = QWidget()
         friend_layout = QVBoxLayout(friend_page)
         friend_layout.setContentsMargins(0, 4, 0, 0)
-        friend_layout.setSpacing(0)
+        friend_layout.setSpacing(8)
+
+        self.label_pending_requests = CaptionLabel(friend_page)
+        self.label_pending_requests.setStyleSheet("color:#888;")
+        self.label_pending_requests.setText("待处理申请：0")
+        friend_layout.addWidget(self.label_pending_requests)
+
+        self.list_pending_requests = ListWidget(friend_page)
+        self.list_pending_requests.setObjectName("pendingRequestList")
+        self.list_pending_requests.setWordWrap(True)
+        self.list_pending_requests.setSpacing(2)
+        self.list_pending_requests.itemDoubleClicked.connect(
+            self._handle_pending_request
+        )
+        friend_layout.addWidget(self.list_pending_requests)
+
+        self.label_friend_list = CaptionLabel(friend_page)
+        self.label_friend_list.setStyleSheet("color:#888;")
+        self.label_friend_list.setText("好友列表")
+        friend_layout.addWidget(self.label_friend_list)
+
         self.list_friends = ListWidget(friend_page)
         self.list_friends.setObjectName("friendList")
         self.list_friends.setWordWrap(True)
@@ -632,6 +776,44 @@ class ChatWindow(QMainWindow):
         toolbar_layout.addStretch(1)
         composer_layout.addWidget(toolbar)
 
+        upload_row = QWidget(composer)
+        upload_layout = QHBoxLayout(upload_row)
+        upload_layout.setContentsMargins(0, 0, 0, 0)
+        upload_layout.setSpacing(8)
+
+        self.label_file_upload = CaptionLabel(upload_row)
+        self.label_file_upload.setStyleSheet("color:#666;font-size:11px;")
+        self.label_file_upload.setText("")
+        self.label_file_upload.hide()
+
+        self.progress_file_upload = QProgressBar(upload_row)
+        self.progress_file_upload.setTextVisible(True)
+        self.progress_file_upload.setMinimum(0)
+        self.progress_file_upload.setMaximum(100)
+        self.progress_file_upload.setValue(0)
+        self.progress_file_upload.setFixedHeight(12)
+        self.progress_file_upload.setStyleSheet(
+            """
+            QProgressBar {
+                border: 1px solid #D8D8D8;
+                border-radius: 6px;
+                background: #F5F5F5;
+                color: #3A3A3A;
+                font-size: 10px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                border-radius: 5px;
+                background: #18A058;
+            }
+            """
+        )
+        self.progress_file_upload.hide()
+
+        upload_layout.addWidget(self.label_file_upload)
+        upload_layout.addWidget(self.progress_file_upload, 1)
+        composer_layout.addWidget(upload_row)
+
         self.edit_message = TextEdit(composer)
         self.edit_message.setAcceptRichText(False)
         self.edit_message.setMinimumHeight(52)
@@ -743,6 +925,10 @@ class ChatWindow(QMainWindow):
             item.setHidden(bool(query) and query not in haystack)
 
     def _filter_friend_list(self, query: str) -> None:
+        for index in range(self.list_pending_requests.count()):
+            item = self.list_pending_requests.item(index)
+            haystack = f"{item.text()}\n{item.data(Qt.UserRole) or ''}".lower()
+            item.setHidden(bool(query) and query not in haystack)
         for index in range(self.list_friends.count()):
             item = self.list_friends.item(index)
             haystack = f"{item.text()}\n{item.data(Qt.UserRole) or ''}".lower()
@@ -823,7 +1009,61 @@ class ChatWindow(QMainWindow):
     def _emit_add_friend_from_result(self, item: QListWidgetItem) -> None:
         user_id = item.data(Qt.UserRole)
         if isinstance(user_id, int):
-            self.add_friend_requested.emit(user_id)
+            note, ok = QInputDialog.getText(
+                self,
+                "好友申请理由",
+                "可填写申请理由（可选）：",
+            )
+            if ok:
+                self.add_friend_requested.emit(user_id, str(note or "").strip())
+
+    def _handle_pending_request(self, item: QListWidgetItem) -> None:
+        request_type = str(item.data(Qt.UserRole + 2) or "friend")
+        decision = self._ask_request_decision(self._build_request_decision_payload(item))
+        if decision is None:
+            return
+        decision_note = ""
+        if decision == "reject":
+            note, ok = QInputDialog.getText(
+                self,
+                "拒绝理由",
+                "可填写拒绝理由（可选）：",
+            )
+            if not ok:
+                return
+            decision_note = str(note or "").strip()
+        if request_type == "group":
+            request_id = item.data(Qt.UserRole + 3)
+            if isinstance(request_id, int) and request_id > 0:
+                self.process_group_request_requested.emit(
+                    request_id, decision, decision_note
+                )
+            return
+        user_id = item.data(Qt.UserRole + 1)
+        if isinstance(user_id, int) and user_id > 0:
+            self.process_friend_request_requested.emit(user_id, decision, decision_note)
+
+    def _build_request_decision_payload(
+        self, item: QListWidgetItem
+    ) -> dict[str, str]:
+        request_type = str(item.data(Qt.UserRole + 2) or "friend")
+        payload: dict[str, str] = {
+            "request_type": request_type,
+            "applicant": str(item.data(Qt.UserRole + 4) or ""),
+            "account": str(item.data(Qt.UserRole + 5) or ""),
+            "updated_at": str(item.data(Qt.UserRole + 6) or ""),
+            "request_note": str(item.data(Qt.UserRole + 7) or ""),
+        }
+        if request_type == "group":
+            payload["group_name"] = str(item.data(Qt.UserRole + 8) or "")
+            payload["group_id"] = str(item.data(Qt.UserRole + 9) or "")
+        return payload
+
+    def _ask_request_decision(self, payload: dict[str, str]) -> str | None:
+        dialog = RequestDecisionDialog(payload, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        return dialog.decision
 
     def _open_friend_session(self, item: QListWidgetItem) -> None:
         username = item.data(Qt.UserRole)
@@ -842,13 +1082,17 @@ class ChatWindow(QMainWindow):
     def reset_view_state(self) -> None:
         self.current_peer = None
         self._session_payloads.clear()
+        self._friend_usernames.clear()
         self.list_sessions.clear()
+        self.list_pending_requests.clear()
         self.list_friends.clear()
         self.list_search_result.clear()
         self.panel_search.clear()
         self.search_input.clear()
         self._clear_message_widgets()
+        self.finish_file_upload()
         self._refresh_nav_avatar("?")
+        self.label_pending_requests.setText("待处理申请：0")
         self._apply_session_summary(None, None)
         self._sync_send_state()
 
@@ -867,15 +1111,72 @@ class ChatWindow(QMainWindow):
 
     def populate_friends(self, friends: list[dict[str, object]]) -> None:
         self.list_friends.clear()
+        self._friend_usernames.clear()
         for item in friends:
             username = str(item.get("username") or "")
             nickname = str(item.get("nickname") or username)
+            if username:
+                self._friend_usernames.add(username)
             online = "在线" if bool(item.get("is_online")) else "离线"
             row = QListWidgetItem(f"{nickname}\n{username} · {online}")
             row.setData(Qt.UserRole, username)
             row.setToolTip(f"{nickname} ({username})")
             row.setSizeHint(QSize(0, 48))
             self.list_friends.addItem(row)
+        self._filter_friend_list(self.panel_search.text().strip().lower())
+
+    def populate_pending_requests(self, requests: list[dict[str, object]]) -> None:
+        self.list_pending_requests.clear()
+        pending_count = len(requests)
+        for item in requests:
+            username = str(item.get("username") or "")
+            nickname = str(item.get("nickname") or username)
+            updated_at = str(item.get("request_updated_at") or "").strip()
+            request_note = str(item.get("request_note") or "").strip()
+            suffix = f" · {updated_at}" if updated_at else ""
+            note_line = f"\n申请理由：{request_note or '（未填写）'}"
+            row = QListWidgetItem(
+                f"[好友申请] {nickname}\n账号：{username}{suffix}{note_line}"
+            )
+            row.setData(Qt.UserRole, username)
+            row.setData(Qt.UserRole + 1, int(item.get("id") or 0))
+            row.setData(Qt.UserRole + 2, "friend")
+            row.setData(Qt.UserRole + 4, nickname)
+            row.setData(Qt.UserRole + 5, username)
+            row.setData(Qt.UserRole + 6, updated_at)
+            row.setData(Qt.UserRole + 7, request_note)
+            row.setToolTip(f"双击处理：{nickname} ({username})")
+            row.setSizeHint(QSize(0, 68))
+            self.list_pending_requests.addItem(row)
+        self.label_pending_requests.setText(f"待处理申请：{pending_count}")
+        self._filter_friend_list(self.panel_search.text().strip().lower())
+
+    def populate_pending_group_requests(self, requests: list[dict[str, object]]) -> None:
+        for item in requests:
+            group_name = str(item.get("group_name") or "群聊")
+            requester = str(item.get("requester_username") or "")
+            group_id = int(item.get("group_id") or 0)
+            request_id = int(item.get("request_id") or 0)
+            updated_at = str(item.get("request_updated_at") or "").strip()
+            request_note = str(item.get("request_note") or "").strip()
+            suffix = f" · {updated_at}" if updated_at else ""
+            note_line = f"\n申请理由：{request_note or '（未填写）'}"
+            row = QListWidgetItem(
+                f"[加群申请] {group_name}#{group_id}\n邀请人：{requester}{suffix}{note_line}"
+            )
+            row.setData(Qt.UserRole, group_name)
+            row.setData(Qt.UserRole + 2, "group")
+            row.setData(Qt.UserRole + 3, request_id)
+            row.setData(Qt.UserRole + 4, requester)
+            row.setData(Qt.UserRole + 5, requester)
+            row.setData(Qt.UserRole + 6, updated_at)
+            row.setData(Qt.UserRole + 7, request_note)
+            row.setData(Qt.UserRole + 8, group_name)
+            row.setData(Qt.UserRole + 9, group_id)
+            row.setToolTip(f"双击处理：群 {group_name}（邀请人 {requester}）")
+            row.setSizeHint(QSize(0, 68))
+            self.list_pending_requests.addItem(row)
+        self.label_pending_requests.setText(f"待处理申请：{self.list_pending_requests.count()}")
         self._filter_friend_list(self.panel_search.text().strip().lower())
 
     def populate_sessions(self, sessions: list[dict[str, object]]) -> None:
@@ -895,6 +1196,8 @@ class ChatWindow(QMainWindow):
         self.list_search_result.clear()
         for item in users:
             username = str(item.get("username") or "")
+            if username in self._friend_usernames:
+                continue
             nickname = str(item.get("nickname") or username)
             raw_user_key = item.get("id")
             online = "在线" if bool(item.get("is_online")) else "离线"
@@ -927,6 +1230,42 @@ class ChatWindow(QMainWindow):
     def show_notice(self, text: str) -> None:
         self.statusBar().showMessage(text, 4500)
         InfoBar.info("提示", text, parent=self, duration=1500)
+
+    def begin_file_upload(self, *, peer: str, file_name: str) -> None:
+        self.label_file_upload.setText(f"发送到 {peer}：{file_name}")
+        self.label_file_upload.setToolTip(file_name)
+        self.label_file_upload.show()
+        self.progress_file_upload.setValue(0)
+        self.progress_file_upload.setFormat("0%")
+        self.progress_file_upload.show()
+
+    def update_file_upload_progress(
+        self, *, file_name: str, sent_bytes: int, total_bytes: int
+    ) -> None:
+        if total_bytes <= 0:
+            self.label_file_upload.setText(f"正在发送：{file_name}")
+            self.progress_file_upload.setRange(0, 0)
+            self.progress_file_upload.show()
+            self.label_file_upload.show()
+            return
+        progress = max(0, min(100, int(sent_bytes * 100 / total_bytes)))
+        self.progress_file_upload.setRange(0, 100)
+        self.progress_file_upload.setValue(progress)
+        self.progress_file_upload.setFormat(f"{progress}%")
+        self.label_file_upload.setText(
+            f"正在发送：{file_name} · {self._format_size(sent_bytes)} / {self._format_size(total_bytes)}"
+        )
+        self.label_file_upload.show()
+        self.progress_file_upload.show()
+
+    def finish_file_upload(self) -> None:
+        self.label_file_upload.hide()
+        self.label_file_upload.setText("")
+        self.label_file_upload.setToolTip("")
+        self.progress_file_upload.hide()
+        self.progress_file_upload.setRange(0, 100)
+        self.progress_file_upload.setValue(0)
+        self.progress_file_upload.setFormat("%p%")
 
     def set_download_root(self, path: str) -> None:
         display_path = self._shorten_path(path)
@@ -1103,6 +1442,13 @@ class ChatWindow(QMainWindow):
         if str(self.current_peer).startswith("[群]"):
             return "连接状态：已连接服务器 · 当前群聊仅支持文本消息"
         return "连接状态：已连接服务器 · 可发送文本和文件"
+
+    def _format_size(self, size: int) -> str:
+        if size < 1024:
+            return f"{size} B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size / (1024 * 1024):.1f} MB"
 
     def _group_name_from_payload(self, payload: dict[str, object]) -> str:
         nickname = str(payload.get("nickname") or "").strip()

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import socket
 import shutil
 import tempfile
 import unittest
 import os
+import time
 from pathlib import Path
 
 from client_app.network.client_controller import ClientController
@@ -31,8 +33,11 @@ class SecureChatTLSPresenceTest(unittest.TestCase):
         )
         self.db.register_user(username="bob", password="pw2", encoding_rule=["base64"])
         bob = self.db.get_user_by_username("bob")
+        alice = self.db.get_user_by_username("alice")
         assert bob is not None
-        self.db.add_friend("alice", int(bob["id"]))
+        assert alice is not None
+        self.db.send_friend_request("alice", int(bob["id"]))
+        self.db.accept_friend_request("bob", int(alice["id"]))
 
         self.server = ServerController(db=self.db, host="127.0.0.1")
         self.port = get_free_port()
@@ -98,6 +103,128 @@ class SecureChatTLSPresenceTest(unittest.TestCase):
         self.assertTrue(pulled["ok"])
         self.assertEqual(len(pulled["data"]["messages"]), 1)
         self.assertEqual(pulled["data"]["messages"][0]["content"], "hello over tls")
+
+    def test_friend_request_requires_acceptance_before_private_chat(self) -> None:
+        self.server.stop()
+        self.alice_client.close()
+        self.bob_client.close()
+        old_db_path = self.db_path
+        fd, db_file = tempfile.mkstemp(suffix=".db", dir=str(Path.cwd()))
+        os.close(fd)
+        self.db_path = Path(db_file)
+        self.db = Database(self.db_path, journal_mode="DELETE")
+        self.db.init_schema()
+        self.db.register_user(username="alice", password="pw1", encoding_rule=["base64"])
+        self.db.register_user(username="bob", password="pw2", encoding_rule=["base64"])
+        self.server = ServerController(db=self.db, host="127.0.0.1")
+        self.port = get_free_port()
+        self.server.start(self.port)
+        self.alice_client = ClientController(host="127.0.0.1", port=self.port)
+        self.bob_client = ClientController(host="127.0.0.1", port=self.port)
+
+        bob = self.db.get_user_by_username("bob")
+        alice = self.db.get_user_by_username("alice")
+        assert bob is not None
+        assert alice is not None
+
+        self.assertTrue(self.alice_client.login("alice", "pw1")["ok"])
+        self.assertTrue(self.bob_client.login("bob", "pw2")["ok"])
+
+        request_sent = self.alice_client.add_friend(
+            "alice", int(bob["id"]), request_note="想加你一起讨论项目"
+        )
+        self.assertTrue(request_sent["ok"])
+        self.assertEqual(request_sent["message"], "好友申请已发送，等待对方同意")
+
+        alice_friends = self.alice_client.list_friends("alice")
+        self.assertTrue(alice_friends["ok"])
+        self.assertEqual(alice_friends["data"]["friends"], [])
+
+        bob_friends = self.bob_client.list_friends("bob")
+        self.assertTrue(bob_friends["ok"])
+        self.assertEqual(len(bob_friends["data"]["pending_requests"]), 1)
+        self.assertEqual(
+            bob_friends["data"]["pending_requests"][0]["username"],
+            "alice",
+        )
+        self.assertEqual(
+            bob_friends["data"]["pending_requests"][0]["request_note"],
+            "想加你一起讨论项目",
+        )
+
+        blocked = self.alice_client.send_message("alice", "bob", "hello", ["base64"])
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(blocked["code"], "not_friends")
+
+        accepted = self.bob_client.accept_friend_request("bob", int(alice["id"]))
+        self.assertTrue(accepted["ok"])
+        self.assertEqual(accepted["message"], "已同意好友申请")
+
+        refreshed = self.alice_client.list_friends("alice")
+        self.assertTrue(refreshed["ok"])
+        self.assertEqual(len(refreshed["data"]["friends"]), 1)
+        self.assertEqual(refreshed["data"]["friends"][0]["username"], "bob")
+
+        sent = self.alice_client.send_message("alice", "bob", "hello after accept", ["base64"])
+        self.assertTrue(sent["ok"])
+        try:
+            old_db_path.unlink(missing_ok=True)
+        except PermissionError:
+            pass
+
+    def test_friend_request_can_retry_after_reject_with_note(self) -> None:
+        self.server.stop()
+        self.alice_client.close()
+        self.bob_client.close()
+        old_db_path = self.db_path
+        fd, db_file = tempfile.mkstemp(suffix=".db", dir=str(Path.cwd()))
+        os.close(fd)
+        self.db_path = Path(db_file)
+        self.db = Database(self.db_path, journal_mode="DELETE")
+        self.db.init_schema()
+        self.db.register_user(username="alice", password="pw1", encoding_rule=["base64"])
+        self.db.register_user(username="bob", password="pw2", encoding_rule=["base64"])
+        self.server = ServerController(db=self.db, host="127.0.0.1")
+        self.port = get_free_port()
+        self.server.start(self.port)
+        self.alice_client = ClientController(host="127.0.0.1", port=self.port)
+        self.bob_client = ClientController(host="127.0.0.1", port=self.port)
+
+        bob = self.db.get_user_by_username("bob")
+        alice = self.db.get_user_by_username("alice")
+        assert bob is not None
+        assert alice is not None
+
+        self.assertTrue(self.alice_client.login("alice", "pw1")["ok"])
+        self.assertTrue(self.bob_client.login("bob", "pw2")["ok"])
+
+        sent_first = self.alice_client.add_friend(
+            "alice", int(bob["id"]), request_note="第一次申请"
+        )
+        self.assertTrue(sent_first["ok"])
+
+        rejected = self.bob_client.reject_friend_request(
+            "bob", int(alice["id"]), decision_note="暂时不方便"
+        )
+        self.assertTrue(rejected["ok"])
+        self.assertEqual(rejected["message"], "已拒绝好友申请")
+
+        sent_second = self.alice_client.add_friend(
+            "alice", int(bob["id"]), request_note="第二次申请，补充理由"
+        )
+        self.assertTrue(sent_second["ok"])
+
+        pending_again = self.bob_client.list_friends("bob")
+        self.assertTrue(pending_again["ok"])
+        self.assertEqual(len(pending_again["data"]["pending_requests"]), 1)
+        self.assertEqual(
+            pending_again["data"]["pending_requests"][0]["request_note"],
+            "第二次申请，补充理由",
+        )
+        try:
+            old_db_path.unlink(missing_ok=True)
+        except PermissionError:
+            pass
 
     def test_login_failed_attempts_and_lock(self) -> None:
         for remain in [4, 3, 2, 1]:
@@ -202,9 +329,28 @@ class SecureChatTLSPresenceTest(unittest.TestCase):
         self.assertTrue(self.alice_client.login("alice", "pw1")["ok"])
         self.assertTrue(self.bob_client.login("bob", "pw2")["ok"])
 
-        created = self.alice_client.create_group("alice", "g-1", ["bob"])
+        created = self.alice_client.create_group(
+            "alice", "g-1", ["bob"], invite_note="进组一起沟通"
+        )
         self.assertTrue(created["ok"])
         group_id = int(created["data"]["group"]["id"])
+        self.assertEqual(created["data"]["group"]["members"], ["alice"])
+
+        bob_friends = self.bob_client.list_friends("bob")
+        self.assertTrue(bob_friends["ok"])
+        pending_group_requests = list(
+            bob_friends["data"].get("pending_group_requests") or []
+        )
+        self.assertEqual(len(pending_group_requests), 1)
+        self.assertEqual(pending_group_requests[0]["group_id"], group_id)
+        self.assertEqual(pending_group_requests[0]["request_note"], "进组一起沟通")
+
+        accepted = self.bob_client.process_group_join_request(
+            "bob",
+            int(pending_group_requests[0]["request_id"]),
+            decision="accept",
+        )
+        self.assertTrue(accepted["ok"])
 
         sent = self.alice_client.send_group_message(
             "alice", group_id, "hello group", ["base64"]
@@ -241,6 +387,45 @@ class SecureChatTLSPresenceTest(unittest.TestCase):
         item = pulled["data"]["files"][0]
         self.assertEqual(item["file_name"], "demo.txt")
         self.assertEqual(item["file_size"], len(payload))
+
+    def test_file_transfer_allows_slow_server_processing(self) -> None:
+        self.assertTrue(self.alice_client.login("alice", "pw1")["ok"])
+        self.assertTrue(self.bob_client.login("bob", "pw2")["ok"])
+
+        original_send_file = self.server.db.send_file
+
+        def slow_send_file(
+            *, sender: str, receiver: str, file_name: str, file_bytes: bytes
+        ):
+            time.sleep(6.0)
+            return original_send_file(
+                sender=sender,
+                receiver=receiver,
+                file_name=file_name,
+                file_bytes=file_bytes,
+            )
+
+        self.server.db.send_file = slow_send_file  # type: ignore[method-assign]
+        self.addCleanup(lambda: setattr(self.server.db, "send_file", original_send_file))
+
+        sent = self.alice_client.send_file("alice", "bob", "slow.txt", b"slow payload")
+        self.assertTrue(sent["ok"])
+
+    def test_large_file_transfer_roundtrip(self) -> None:
+        self.assertTrue(self.alice_client.login("alice", "pw1")["ok"])
+        self.assertTrue(self.bob_client.login("bob", "pw2")["ok"])
+
+        payload = b"chunked-payload-" * 50000
+        sent = self.alice_client.send_file("alice", "bob", "large.bin", payload)
+        self.assertTrue(sent["ok"])
+
+        pulled = self.bob_client.pull_files("bob", peer="alice")
+        self.assertTrue(pulled["ok"])
+        self.assertEqual(len(pulled["data"]["files"]), 1)
+        item = pulled["data"]["files"][0]
+        self.assertEqual(item["file_name"], "large.bin")
+        self.assertEqual(item["file_size"], len(payload))
+        self.assertEqual(base64.b64decode(item["file_base64"].encode("ascii")), payload)
 
 
 if __name__ == "__main__":
