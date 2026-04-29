@@ -32,23 +32,290 @@
 
 依赖文件：requirements.txt
 
-## 架构说明
+## 系统架构
 
-```text
-PyQt5 Client (client_app)
-        |
-        |  TLS + JSON Line Protocol
-        v
-PyQt5 Server UI (server_app/ui + server_app/app.py)
-        |
-        v
-Server Controller (server_app/network/server_controller.py)
-        |
-        v
-SQLite Database (server_app/db.py -> data/server.db)
+### 整体架构图
+
+```mermaid
+graph TB
+    subgraph “客户端应用 (client_app)”
+        CUI[“UI 层<br/>login_window.py<br/>chat_window.py<br/>register_dialog.py”]
+        CApp[“应用层<br/>app.py”]
+        CCtrl[“网络控制器<br/>client_controller.py”]
+        CProto[“协议层<br/>protocol.py”]
+    end
+
+    subgraph “服务端应用 (server_app)”
+        SUI[“UI 层<br/>main_window.py<br/>user_management_dialog.py”]
+        SApp[“应用层<br/>app.py”]
+        SCtrl[“网络控制器<br/>server_controller.py”]
+        SProto[“协议层<br/>protocol.py”]
+        SDB[“数据层<br/>db.py”]
+        SSec[“安全模块<br/>security.py”]
+    end
+
+    subgraph “基础设施”
+        TLS[“TLS 支持<br/>tls_support.py”]
+        DB[(“SQLite<br/>server.db”)]
+    end
+
+    CUI --> CApp
+    CApp --> CCtrl
+    CCtrl --> CProto
+    CProto -->|”TLS + JSON”| TLS
+    TLS -->|”加密传输”| SProto
+    SProto --> SCtrl
+    SCtrl --> SApp
+    SApp --> SUI
+    SCtrl --> SDB
+    SDB --> SSec
+    SDB --> DB
 ```
 
-核心特点：客户端是“同步请求-响应”模型，服务端按 action 分发业务并写入 SQLite。
+### 数据库 ER 图
+
+```mermaid
+erDiagram
+    users {
+        int id PK
+        string username UK
+        string nickname
+        blob avatar
+        blob password_salt
+        blob password_hash
+        string recovery_question
+        blob recovery_salt
+        blob recovery_hash
+        string encoding_rule
+        int locked
+        int failed_attempts
+        string last_seen_at
+        string created_at
+        string updated_at
+    }
+
+    friends {
+        int id PK
+        string username
+        int friend_id FK
+        string status
+        string request_note
+        string decision_note
+        string created_at
+        string updated_at
+    }
+
+    messages {
+        int id PK
+        string sender
+        string receiver
+        string content
+        string encoding_rule
+        string created_at
+    }
+
+    groups_chat {
+        int id PK
+        string name
+        string owner_username
+        string created_at
+    }
+
+    group_members {
+        int id PK
+        int group_id FK
+        string username
+        string created_at
+    }
+
+    group_messages {
+        int id PK
+        int group_id FK
+        string sender
+        string content
+        string encoding_rule
+        string created_at
+    }
+
+    group_join_requests {
+        int id PK
+        int group_id FK
+        string requester_username
+        string target_username
+        string status
+        string request_note
+        string decision_note
+        string created_at
+        string updated_at
+    }
+
+    file_messages {
+        int id PK
+        string sender
+        string receiver
+        string file_name
+        int file_size
+        blob file_blob
+        string created_at
+    }
+
+    users ||--o{ friends : “has”
+    users ||--o{ group_members : “joins”
+    groups_chat ||--o{ group_members : “contains”
+    groups_chat ||--o{ group_join_requests : “receives”
+    groups_chat ||--o{ group_messages : “contains”
+```
+
+### 通信时序图
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant TLS as TLS层
+    participant S as 服务端
+    participant DB as SQLite
+
+    Note over C,S: 登录流程
+    C->>TLS: 建立 TLS 连接
+    TLS->>S: SSL握手
+    C->>S: {“action”:”login”,”username”:”...”,”password”:”...”}
+    S->>DB: 验证密码哈希
+    DB-->>S: 用户数据
+    S-->>C: {“ok”:true,”data”:{...}}
+
+    Note over C,S: 消息发送
+    C->>S: {“action”:”send_message”,”sender”:”...”,”receiver”:”...”,”content”:”...”}
+    S->>DB: 存储消息
+    DB-->>S: 消息ID
+    S-->>C: {“ok”:true}
+
+    Note over C,S: 文件传输（分片）
+    C->>S: {“action”:”send_file”,”sender”:”...”,”receiver”:”...”,”file_name”:”...”,”file_size”:...}
+    S-->>C: {“ok”:true,”data”:{“upload_id”:”...”}}
+    loop 分片上传
+        C->>S: {“action”:”upload_chunk”,”upload_id”:”...”,”chunk_index”:...,”data”:”base64...”}
+        S-->>C: {“ok”:true}
+    end
+    C->>S: {“action”:”upload_complete”,”upload_id”:”...”}
+    S->>DB: 存储文件
+    S-->>C: {“ok”:true}
+```
+
+### 核心特点
+
+- **同步请求-响应模型**：客户端发送请求，等待服务端响应
+- **Action 分发机制**：服务端按 `action` 字段路由到对应处理逻辑
+- **线程池并发**：`ThreadingTCPServer` 处理多客户端并发连接
+- **信号槽通信**：PyQt5 信号槽实现 UI 与网络层解耦
+- **分片文件传输**：大文件分片上传，支持进度跟踪
+
+## 代码实现现状
+
+### 客户端模块 (client_app)
+
+| 模块 | 文件 | 职责 |
+|-----|------|-----|
+| **应用层** | `app.py` | 窗口管理、登录状态维护、全局热键 |
+| **协议层** | `protocol.py` | JSON 编解码、请求/响应格式化 |
+| **网络层** | `network/client_controller.py` | TCP 连接管理、请求发送、信号发射 |
+| **UI 层** | `ui/login_window.py` | 登录/注册界面 |
+| | `ui/chat_window.py` | 聊天主界面、消息列表、文件管理 |
+| | `ui/register_dialog.py` | 注册对话框 |
+| | `ui/profile_dialog.py` | 个人资料编辑 |
+| | `ui/theme.py` | 仿微信风格主题配置 |
+
+### 服务端模块 (server_app)
+
+| 模块 | 文件 | 职责 |
+|-----|------|-----|
+| **应用层** | `app.py` | 服务生命周期管理 |
+| **协议层** | `protocol.py` | 请求解码、响应编码、敏感文本编解码 |
+| **网络层** | `network/server_controller.py` | TCP 监听、连接处理、在线状态管理 |
+| **数据层** | `db.py` | SQLite 操作、Schema 管理、业务查询 |
+| **安全层** | `security.py` | PBKDF2 密码哈希、盐值生成 |
+| **UI 层** | `ui/main_window.py` | 服务器主界面 |
+| | `ui/user_management_dialog.py` | 用户管理对话框 |
+| | `ui/add_user_dialog.py` | 添加用户对话框 |
+| | `ui/avatar.py` | 头像处理 |
+| | `ui/theme.py` | 服务端主题配置 |
+
+### 关键类说明
+
+**ClientController** (`client_app/network/client_controller.py`)
+- 管理与服务端的 TLS 连接
+- 提供异步请求方法（login、register、search_users 等）
+- 通过 PyQt5 信号（login_finished、message_sent 等）通知 UI 层
+- 文件分片上传支持（FILE_CHUNK_SIZE = 256KB）
+
+**ServerController** (`server_app/network/server_controller.py`)
+- 继承 `QObject`，发射日志信号
+- `ThreadingTCPServer` 实现多线程并发处理
+- 在线用户管理（`_online_users` 字典）
+- 单账号单终端会话控制（踢下线机制）
+
+**Database** (`server_app/db.py`)
+- SQLite WAL 模式，支持并发读写
+- 自动 Schema 迁移（`_ensure_schema_compat`）
+- 8 张核心表：users、friends、messages、groups_chat、group_members、group_messages、group_join_requests、file_messages
+- 密码使用 PBKDF2 + 随机盐值哈希存储
+
+### 协议格式
+
+**请求格式** (客户端 -> 服务端)
+```json
+{
+  "action": "login|register|send_message|...",
+  "username": "...",
+  "password": "...",
+  // 其他业务字段
+}
+```
+
+**响应格式** (服务端 -> 客户端)
+```json
+{
+  "ok": true|false,
+  "code": "SUCCESS|ERROR_CODE",
+  "message": "描述信息",
+  "data": { ... }
+}
+```
+
+### 已实现的 Action 列表
+
+| Action | 说明 |
+|--------|------|
+| `login` | 用户登录 |
+| `register` | 用户注册 |
+| `logout` | 用户登出 |
+| `search_users` | 搜索用户 |
+| `add_friend` | 发送好友申请 |
+| `respond_friend` | 同意/拒绝好友申请 |
+| `list_friends` | 获取好友列表 |
+| `send_message` | 发送私聊消息 |
+| `fetch_messages` | 拉取历史消息 |
+| `create_group` | 创建群聊 |
+| `invite_to_group` | 邀请加入群聊 |
+| `respond_group_invite` | 同意/拒绝群聊邀请 |
+| `list_groups` | 获取群聊列表 |
+| `send_group_message` | 发送群消息 |
+| `fetch_group_messages` | 拉取群消息 |
+| `send_file` | 发起文件传输 |
+| `upload_chunk` | 上传文件分片 |
+| `upload_complete` | 完成文件上传 |
+| `list_files` | 获取文件列表 |
+| `download_file` | 下载文件 |
+| `update_profile` | 更新个人资料 |
+
+### 安全机制
+
+| 机制 | 实现 |
+|------|------|
+| **传输加密** | TLS 1.2+，自签名证书自动管理 |
+| **密码存储** | PBKDF2 + 随机盐值（16字节） |
+| **会话控制** | 单账号单终端，新登录踢下旧会话 |
+| **敏感文本** | 可选 base64/hex/caesar 编码链 |
+| **登录保护** | 失败次数限制（MAX_LOGIN_ATTEMPTS = 5） |
 
 ## 快速开始
 
