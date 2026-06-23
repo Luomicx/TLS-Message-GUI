@@ -38,32 +38,32 @@
 
 ```mermaid
 graph TB
-    subgraph “客户端应用 (client_app)”
-        CUI[“UI 层<br/>login_window.py<br/>chat_window.py<br/>register_dialog.py”]
-        CApp[“应用层<br/>app.py”]
-        CCtrl[“网络控制器<br/>client_controller.py”]
-        CProto[“协议层<br/>protocol.py”]
+    subgraph "客户端应用 (client_app)"
+        CUI["UI 层<br>login_window.py<br>chat_window.py<br>register_dialog.py"]
+        CApp["应用层<br>app.py"]
+        CCtrl["网络控制器<br>client_controller.py"]
+        CProto["协议层<br>protocol.py"]
     end
 
-    subgraph “服务端应用 (server_app)”
-        SUI[“UI 层<br/>main_window.py<br/>user_management_dialog.py”]
-        SApp[“应用层<br/>app.py”]
-        SCtrl[“网络控制器<br/>server_controller.py”]
-        SProto[“协议层<br/>protocol.py”]
-        SDB[“数据层<br/>db.py”]
-        SSec[“安全模块<br/>security.py”]
+    subgraph "服务端应用 (server_app)"
+        SUI["UI 层<br>main_window.py<br>user_management_dialog.py"]
+        SApp["应用层<br>app.py"]
+        SCtrl["网络控制器<br>server_controller.py"]
+        SProto["协议层<br>protocol.py"]
+        SDB["数据层<br>db.py"]
+        SSec["安全模块<br>security.py"]
     end
 
-    subgraph “基础设施”
-        TLS[“TLS 支持<br/>tls_support.py”]
-        DB[(“SQLite<br/>server.db”)]
+    subgraph "基础设施"
+        TLS["TLS 支持<br>tls_support.py"]
+        DB[("SQLite<br>server.db")]
     end
 
     CUI --> CApp
     CApp --> CCtrl
     CCtrl --> CProto
-    CProto -->|”TLS + JSON”| TLS
-    TLS -->|”加密传输”| SProto
+    CProto -->|"TLS + JSON"| TLS
+    TLS -->|"加密传输"| SProto
     SProto --> SCtrl
     SCtrl --> SApp
     SApp --> SUI
